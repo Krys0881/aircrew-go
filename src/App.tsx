@@ -6,6 +6,7 @@ import { ChatStore, type ChatRow } from './chats'
 import { ChatList, Avatar } from './ChatList'
 import { mediaOf, fileStateOf, autoDownload, MediaView, type Media, type FileState } from './media'
 import { TdJson } from './td'
+import { App as CapApp } from '@capacitor/app'
 import { MessageMarkdown } from '@aircrew/components/MessageMarkdown'
 import 'katex/dist/katex.min.css'
 import '@aircrew/styles.css'   // the Mac app's own stylesheet — one design for both apps
@@ -227,6 +228,23 @@ export default function App() {
     await td.current!.invoke({ '@type': 'getCallbackQueryAnswer', chat_id: open.id, message_id: m.id,
       payload: { '@type': 'callbackQueryPayloadData', data } }).catch(() => undefined)
   }
+
+  // Android back = Go's own navigation (Capacitor would otherwise exit the app):
+  // photo viewer / notice -> chat -> list -> background (minimize, never kill: TDLib stays connected).
+  const backRef = useRef<() => void>(() => {})
+  backRef.current = () => {
+    if (zoom) return setZoom(null)
+    if (notice) return setNotice('')
+    if (open) {
+      if (wide && listHidden) return toggleList()       // unfolded + list hidden: first bring the list back
+      return closeOpen()
+    }
+    void CapApp.minimizeApp()
+  }
+  useEffect(() => {
+    const h = CapApp.addListener('backButton', () => backRef.current())
+    return () => { void h.then((x) => x.remove()) }
+  }, [])
 
   if (auth !== 'ready') return (
     <div className="go-auth">
