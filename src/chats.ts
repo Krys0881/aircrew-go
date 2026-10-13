@@ -31,6 +31,7 @@ export class ChatStore {
   rows = new Map<number, ChatRow>()
   myId = 0
   private bots = new Map<number, boolean>()   // userId -> owned (can_be_edited)
+  users = new Map<number, string>()           // userId -> display name (message authors)
   private listeners = new Set<() => void>()
   private dirty = false
   onChange(cb: () => void): () => void { this.listeners.add(cb); return () => { this.listeners.delete(cb) } }
@@ -65,6 +66,7 @@ export class ChatStore {
       case 'updateUser': {
         const t = u.user?.type
         if (t?.['@type'] === 'userTypeBot') this.bots.set(u.user.id, !!t.can_be_edited)
+        this.users.set(u.user.id, [u.user.first_name, u.user.last_name].filter(Boolean).join(' ') || 'Deleted account')
         for (const r of this.rows.values()) if (r.userId === u.user.id) this.refreshKind(r)
         break
       }
@@ -105,6 +107,13 @@ export class ChatStore {
       default: return
     }
     this.touch()
+  }
+  authorOf(m: Any, chat?: ChatRow): string {
+    if (m.is_outgoing) return 'You'
+    const s = m.sender_id
+    if (s?.['@type'] === 'messageSenderUser') return this.users.get(s.user_id) ?? chat?.title ?? ''
+    if (s?.['@type'] === 'messageSenderChat') return this.rows.get(s.chat_id)?.title ?? chat?.title ?? ''
+    return chat?.title ?? ''
   }
   sorted(): ChatRow[] {
     return [...this.rows.values()].filter((r) => r.order > 0n).sort((a, b) => (a.order === b.order ? 0 : a.order > b.order ? -1 : 1))

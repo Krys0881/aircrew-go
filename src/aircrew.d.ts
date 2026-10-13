@@ -4,3 +4,11 @@ declare module '@aircrew/components/MessageMarkdown' {
   export const MessageMarkdown: NamedExoticComponent<{ text: string }>
   export const StreamingMarkdown: NamedExoticComponent<{ text: string }>
 }
+declare module '@aircrew/components/icons' {
+  import type { FC } from 'react'
+  type I = FC<{ size?: number; className?: string }>
+  export const BotIcon: I
+  export const PinIcon: I
+  export const MuteIcon: I
+  export const MoreIcon: I
+}

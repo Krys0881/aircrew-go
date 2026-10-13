@@ -1,73 +1,69 @@
 import { useMemo, useState } from 'react'
 import { Capacitor } from '@capacitor/core'
+import { BotIcon, PinIcon, MuteIcon } from '@aircrew/components/icons'
 import type { ChatRow } from './chats'
 
-const COLORS = ['#e17076', '#eda86c', '#a695e7', '#7bc862', '#6ec9cb', '#65aadd', '#ee7aae']
+// Same markup + class names as the Mac app's ChatList (ai-gram/src/renderer/components/ChatList.tsx),
+// styled by the Mac app's own styles.css.
 export function initials(t: string) {
-  const words = t.split(/\s+/).filter((w) => /\p{L}|\p{N}/u.test(w))   // skip '-', '·', emoji-only tokens
+  const words = t.split(/\s+/).filter((w) => /\p{L}|\p{N}/u.test(w))
   return words.slice(0, 2).map((w) => ([...w].find((ch) => /\p{L}|\p{N}/u.test(ch)) ?? '').toUpperCase()).join('') || '?'
 }
-export function Avatar({ row, size = 48 }: { row: ChatRow; size?: number }) {
-  const style = { width: size, height: size, minWidth: size, fontSize: size * 0.38 }
-  if (row.photoPath) return <img className="avatar" style={style} src={Capacitor.convertFileSrc(row.photoPath)} alt="" />
-  const bg = row.kind === 'self' ? '#3b82f6' : COLORS[Math.abs(row.id) % COLORS.length]
-  return <div className="avatar" style={{ ...style, background: bg }}>{row.kind === 'self' ? '🔖' : initials(row.title)}</div>
-}
-function when(unix: number): string {
-  if (!unix) return ''
-  const d = new Date(unix * 1000), now = new Date()
-  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-  if (now.getTime() - d.getTime() < 6 * 86400e3) return d.toLocaleDateString([], { weekday: 'short' })
-  return d.toLocaleDateString([], { day: '2-digit', month: 'short' })
+export function Avatar({ row, size }: { row: ChatRow; size?: number }) {
+  const style = size ? { width: size, height: size, flexBasis: size, fontSize: Math.round(size * 0.38) } : undefined
+  if (row.photoPath) return <img className="avatar avatar-img" style={style} src={Capacitor.convertFileSrc(row.photoPath)} alt="" />
+  return <div className="avatar" style={style}>{row.kind === 'self' ? '🔖' : initials(row.title)}</div>
 }
 
-type Scope = 'crew' | 'bots' | 'all'
+type Scope = 'crew' | 'all'
 export function ChatList({ rows, selected, onOpen }: { rows: ChatRow[]; selected?: number; onOpen: (r: ChatRow) => void }) {
   const crewCount = rows.filter((r) => r.ownedBot).length
-  const [scope, setScope] = useState<Scope | null>(null)
+  const [scope, setScope] = useState<Scope | null>(() => (localStorage.getItem('ago.scope') as Scope | null))
   const eff: Scope = scope ?? (crewCount ? 'crew' : 'all')
+  const pick = (s: Scope) => { localStorage.setItem('ago.scope', s); setScope(s) }
   const [q, setQ] = useState('')
   const shown = useMemo(() => {
-    let list = eff === 'crew' ? rows.filter((r) => r.ownedBot) : eff === 'bots' ? rows.filter((r) => r.kind === 'bot' || r.kind === 'self') : rows
     const s = q.trim().toLowerCase()
-    if (s) list = rows.filter((r) => r.title.toLowerCase().includes(s))
-    return list
+    if (s) return rows.filter((r) => r.title.toLowerCase().includes(s))
+    return eff === 'crew' ? rows.filter((r) => r.ownedBot) : rows
   }, [rows, eff, q])
-  const unreadIn = (f: (r: ChatRow) => boolean) => rows.filter((r) => f(r) && (r.unread > 0 || r.markedUnread)).length
-  const seg = (k: Scope, label: string, n: number) => (
-    <button className={`seg${eff === k ? ' on' : ''}`} onClick={() => setScope(k)}>{label}{n ? <span className="segdot">{n}</span> : null}</button>)
   return (
-    <div className="list">
-      <header className="listhead">
-        <div className="brand"><img className="logo" src="/logo.png" alt="" />Aircrew <span className="go">Go</span></div>
-        <input className="search" placeholder="Search" value={q} onChange={(e) => setQ(e.target.value)} />
-        <div className="segs">
-          {seg('crew', `My crew${crewCount ? ` · ${crewCount}` : ''}`, unreadIn((r) => r.ownedBot))}
-          {seg('bots', 'Bots', unreadIn((r) => r.kind === 'bot'))}
-          {seg('all', 'All', unreadIn(() => true))}
+    <div className="chatlist go-list">
+      <div className="go-top">
+        <img className="go-logo" src="/logo.png" alt="" />
+        <span className="go-brand">Aircrew <span className="go-word">Go</span></span>
+      </div>
+      <div className="toolbar">
+        <input className="search" placeholder="Search chats…" value={q} onChange={(e) => setQ(e.target.value)} />
+      </div>
+      <div className="chatfilter">
+        <div className="seg cf-seg">
+          <button className={`seg-btn${eff === 'all' ? ' active' : ''}`} onClick={() => pick('all')}>All</button>
+          <button className={`seg-btn cf-crew-btn${eff === 'crew' ? ' active' : ''}`} onClick={() => pick('crew')}>
+            <BotIcon size={13} /> My crew{crewCount ? ` (${crewCount})` : ''}
+          </button>
         </div>
-      </header>
+      </div>
       <div className="rows">
         {!rows.length && <div className="empty">Loading your chats…</div>}
-        {rows.length > 0 && !shown.length && <div className="empty">{q ? 'No chats match.' : 'Nothing here yet.'}</div>}
-        {shown.map((r) => {
-          const unread = r.unread > 0 || r.markedUnread
-          return (
-            <button key={r.id} className={`row${selected === r.id ? ' sel' : ''}`} onClick={() => onOpen(r)}>
-              <Avatar row={r} />
-              <div className="rmain">
-                <div className="rtop">
-                  <span className={`rtitle${unread ? ' b' : ''}`}>{r.title}{r.ownedBot && eff !== 'crew' && <span className="tag">crew</span>}</span>
-                  <span className="rtime">{when(r.lastDate)}</span>
-                </div>
-                <div className="rbot">
-                  <span className="rprev">{r.lastOut && <span className="you">You: </span>}{r.lastText || ' '}</span>
-                  {r.pinned && !unread && <span className="pin">📌</span>}
-                  {unread && <span className={`ubadge${r.muted ? ' muted' : ''}`}>{r.unread || ''}</span>}
-                </div>
+        {rows.length > 0 && !shown.length && <div className="empty">{q ? 'No chats match' : 'No bots you own yet.'}</div>}
+        {shown.map((c) => (
+          <div key={c.id} className={`row${selected === c.id ? ' active' : ''}`} onClick={() => onOpen(c)}>
+            <Avatar row={c} />
+            <div className="meta">
+              <div className="line1">
+                {c.pinned && <span className="chip-ico chip-pin"><PinIcon size={12} /></span>}
+                <span className="title">{c.title}</span>
+                {c.muted && <span className="chip-ico"><MuteIcon size={13} /></span>}
+                {c.kind === 'bot' && <span className="badge">BOT</span>}
+                {(c.kind === 'group') && <span className="badge badge-group">GROUP</span>}
               </div>
-            </button>)
-        })}
+              <div className="line2">{c.lastOut ? 'You: ' : ''}{c.lastText || '—'}</div>
+            </div>
+            {c.unread > 0 ? <div className={`unread${c.muted ? ' muted' : ''}`}>{c.unread > 99 ? '99+' : c.unread}</div>
+              : c.markedUnread && <div className={`unread dot${c.muted ? ' muted' : ''}`} />}
+          </div>))}
       </div>
+      <div className="statusbar">{rows.length} chats</div>
     </div>)
 }

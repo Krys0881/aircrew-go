@@ -6,6 +6,7 @@ import { ChatStore, type ChatRow } from './chats'
 import { ChatList, Avatar } from './ChatList'
 import { MessageMarkdown } from '@aircrew/components/MessageMarkdown'
 import 'katex/dist/katex.min.css'
+import '@aircrew/styles.css'   // the Mac app's own stylesheet — one design for both apps
 import './app.css'
 
 type Any = Record<string, any>
@@ -19,16 +20,17 @@ function useWide(): boolean {
   useEffect(() => { const m = window.matchMedia(mq); const f = () => setW(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f) }, [])
   return w
 }
-type Msg = { id: number; out: boolean; md: string; buttons?: { text: string; data?: string }[][] }
+type Msg = { id: number; out: boolean; md: string; author: string; date: number; buttons?: { text: string; data?: string }[][] }
+const fmtTime = (unix: number) => new Date(unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-function msgOf(m: Any): Msg {
+function msgOf(m: Any, chat?: ChatRow): Msg {
   const c = m.content ?? {}
   const md = c['@type'] === 'messageText' ? ftToMarkdown(c.text as FT)
     : c.caption ? ftToMarkdown(c.caption as FT) : `_[${String(c['@type'] ?? '?').replace('message', '')}]_`
   const rm = m.reply_markup
   const buttons = rm?.['@type'] === 'replyMarkupInlineKeyboard'
     ? (rm.rows as Any[][]).map((row) => row.map((b) => ({ text: b.text, data: b.type?.data }))) : undefined
-  return { id: m.id, out: !!m.is_outgoing, md, buttons }
+  return { id: m.id, out: !!m.is_outgoing, md, author: store.authorOf(m, chat), date: m.date ?? 0, buttons }
 }
 
 export default function App() {
@@ -69,7 +71,7 @@ export default function App() {
         if (u['@type'] === 'updateNewMessage') {
           const m = (u as Any).message
           if (openRef.current && m.chat_id === openRef.current.id) {
-            setMsgs((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, msgOf(m)]))
+            setMsgs((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, msgOf(m, openRef.current ?? undefined)]))
             void c.invoke({ '@type': 'viewMessages', chat_id: m.chat_id, message_ids: [m.id], force_read: true }).catch(() => undefined)
           }
         }
@@ -133,7 +135,7 @@ export default function App() {
       const ms = r.messages as Any[]; if (!ms?.length) break
       all = all.concat(ms); from = ms[ms.length - 1].id
     }
-    setMsgs(all.reverse().map(msgOf))
+    setMsgs(all.reverse().map((m) => msgOf(m, ch)))
     if (all.length) void c.invoke({ '@type': 'viewMessages', chat_id: ch.id, message_ids: all.map((m) => m.id), force_read: true }).catch(() => undefined)
   }
   function closeOpen() {
@@ -156,42 +158,52 @@ export default function App() {
   }
 
   if (auth !== 'ready') return (
-    <div className="auth">
-      <h1 className="authbrand"><img className="logo big" src="/logo.png" alt="" />Aircrew <span className="go">Go</span></h1>
-      <p className="hint">{auth === 'loading' ? 'Starting TDLib…' : auth === 'phone' ? 'Your Telegram phone number (+971…)'
+    <div className="go-auth">
+      <div className="go-auth-brand"><img className="go-logo big" src="/logo.png" alt="" /><div className="go-brand">Aircrew <span className="go-word">Go</span></div></div>
+      <p className="go-hint">{auth === 'loading' ? 'Starting TDLib…' : auth === 'phone' ? 'Your Telegram phone number (+971…)'
         : auth === 'code' ? `Login code (${authHint.replace('authenticationCodeType', '')})`
         : auth === 'password' ? `2FA password${authHint ? ` — hint: ${authHint}` : ''}` : authHint}</p>
       {['phone', 'code', 'password'].includes(auth) && <>
-        <input value={input} onChange={(e) => setInput(e.target.value)} type={auth === 'password' ? 'password' : 'text'}
+        <input className="search" value={input} onChange={(e) => setInput(e.target.value)} type={auth === 'password' ? 'password' : 'text'}
           inputMode={auth === 'password' ? 'text' : 'tel'} autoFocus onKeyDown={(e) => e.key === 'Enter' && void submit()} />
-        <button onClick={() => void submit()}>Continue</button></>}
-      {err && <p className="err">{err}</p>}
+        <button className="composer-send go-wide-btn" onClick={() => void submit()}>Continue</button></>}
+      {err && <p className="go-err">{err}</p>}
     </div>)
 
   const list = <ChatList rows={chats} selected={open?.id} onOpen={(r) => void openChat(r)} />
   const conv = open ? (
-    <div className="conv">
-      <header className="convhead">
-        {!wide && <button className="back" onClick={closeOpen}>‹</button>}
-        {wide && <button className="paneBtn" onClick={toggleList} title={listHidden ? 'Show chats' : 'Hide chats'}>
-          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <div className="conversation go-conv">
+      <div className="conv-head">
+        {!wide && <button className="go-icon-btn" onClick={closeOpen} aria-label="Back">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg></button>}
+        {wide && <button className="go-icon-btn" onClick={toggleList} title={listHidden ? 'Show chats' : 'Hide chats'}>
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
             <rect x="3" y="4" width="18" height="16" rx="3" /><line x1="9" y1="4" x2="9" y2="20" />
             {listHidden ? <polyline points="13 10 15 12 13 14" /> : <polyline points="15 10 13 12 15 14" />}
           </svg></button>}
-        <Avatar row={open} size={34} />
-        <span className="ctitle">{open.title}</span>
-      </header>
-      <div className="msgs" ref={msgsRef}>
+        <Avatar row={open} size={28} />
+        <span className="conv-title">{open.title}</span>
+      </div>
+      <div className="conv-scroll" ref={msgsRef}>
         {msgs.map((m) => (
-          <div key={m.id} className={`bubble ${m.out ? 'out' : 'in'}`}>
-            <MessageMarkdown text={m.md} />
-            {m.buttons?.map((row, i) => <div key={i} className="btnrow">
-              {row.map((b, j) => <button key={j} onClick={() => void press(m, b.data)}>{b.text}</button>)}</div>)}
+          <div key={m.id} className={`msg ${m.out ? 'out' : 'in'}`}>
+            <div className="bubble">
+              <div className="msg-head"><span className="author">{m.author}</span><span className="time">{fmtTime(m.date)}</span></div>
+              <MessageMarkdown text={m.md} />
+              {m.buttons && <div className="msg-buttons">{m.buttons.map((row, i) => (
+                <div key={i} className="msg-btn-row">{row.map((b, j) => (
+                  <button key={j} className="msg-btn" onClick={() => void press(m, b.data)}>{b.text}</button>))}</div>))}</div>}
+            </div>
           </div>))}
       </div>
-      <footer><input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Message"
-        onKeyDown={(e) => e.key === 'Enter' && void send()} /><button onClick={() => void send()}>Send</button></footer>
-    </div>) : <div className="conv placeholder"><div>Pick a chat</div></div>
+      <div className="composer">
+        <textarea className="composer-input" rows={1} value={draft} placeholder="Message…"
+          onChange={(e) => { setDraft(e.target.value); e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px` }} />
+        <button className="composer-send" disabled={!draft.trim()} onClick={() => void send()} aria-label="Send">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
+        </button>
+      </div>
+    </div>) : <div className="conversation empty-pane"><img className="go-logo big" src="/logo.png" alt="" /><div>Pick a chat from your crew</div></div>
 
   if (wide) return <div className={`split${listHidden && open ? ' hidden' : ''}`}>{!(listHidden && open) && list}{conv}</div>
   return open ? conv : list
