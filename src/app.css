@@ -48,3 +48,12 @@ footer input { flex: 1; padding: 12px; border-radius: 10px; border: 1px solid #3
 .split { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; height: 100vh }
 .split .list { border-right: 1px solid #222 }
 .placeholder { align-items: center; justify-content: center; opacity: .5 }
+/* logo + collapsible list */
+.brand { display: flex; align-items: center; gap: 9px }
+.logo { width: 28px; height: 28px; border-radius: 7px }
+.logo.big { width: 64px; height: 64px; border-radius: 15px }
+.go { color: #2dd4bf; font-weight: 800 }
+.authbrand { display: flex; align-items: center; gap: 14px }
+.split.hidden { grid-template-columns: 1fr }
+.paneBtn { background: none; border: 0; color: #9cc3ff; padding: 2px 4px; display: flex; align-items: center }
+.split.hidden .msgs { padding-left: 6%; padding-right: 6% }

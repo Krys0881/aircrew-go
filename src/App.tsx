@@ -39,6 +39,8 @@ export default function App() {
   const [err, setErr] = useState('')
   const [chats, setChats] = useState<Chat[]>([])
   const wide = useWide()
+  const [listHidden, setListHidden] = useState(() => localStorage.getItem('ago.listHidden') === '1')
+  const toggleList = () => setListHidden((h) => { localStorage.setItem('ago.listHidden', h ? '0' : '1'); return !h })
   useEffect(() => store.onChange(() => {
     setChats(store.sorted())
     const c = td.current; if (!c) return
@@ -155,7 +157,7 @@ export default function App() {
 
   if (auth !== 'ready') return (
     <div className="auth">
-      <h1>✈️ Aircrew Go</h1>
+      <h1 className="authbrand"><img className="logo big" src="/logo.png" alt="" />Aircrew <span className="go">Go</span></h1>
       <p className="hint">{auth === 'loading' ? 'Starting TDLib…' : auth === 'phone' ? 'Your Telegram phone number (+971…)'
         : auth === 'code' ? `Login code (${authHint.replace('authenticationCodeType', '')})`
         : auth === 'password' ? `2FA password${authHint ? ` — hint: ${authHint}` : ''}` : authHint}</p>
@@ -171,6 +173,11 @@ export default function App() {
     <div className="conv">
       <header className="convhead">
         {!wide && <button className="back" onClick={closeOpen}>‹</button>}
+        {wide && <button className="paneBtn" onClick={toggleList} title={listHidden ? 'Show chats' : 'Hide chats'}>
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <rect x="3" y="4" width="18" height="16" rx="3" /><line x1="9" y1="4" x2="9" y2="20" />
+            {listHidden ? <polyline points="13 10 15 12 13 14" /> : <polyline points="15 10 13 12 15 14" />}
+          </svg></button>}
         <Avatar row={open} size={34} />
         <span className="ctitle">{open.title}</span>
       </header>
@@ -186,6 +193,6 @@ export default function App() {
         onKeyDown={(e) => e.key === 'Enter' && void send()} /><button onClick={() => void send()}>Send</button></footer>
     </div>) : <div className="conv placeholder"><div>Pick a chat</div></div>
 
-  if (wide) return <div className="split">{list}{conv}</div>
+  if (wide) return <div className={`split${listHidden && open ? ' hidden' : ''}`}>{!(listHidden && open) && list}{conv}</div>
   return open ? conv : list
 }

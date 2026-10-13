@@ -39,7 +39,7 @@ export function ChatList({ rows, selected, onOpen }: { rows: ChatRow[]; selected
   return (
     <div className="list">
       <header className="listhead">
-        <div className="brand">✈️ Aircrew Go</div>
+        <div className="brand"><img className="logo" src="/logo.png" alt="" />Aircrew <span className="go">Go</span></div>
         <input className="search" placeholder="Search" value={q} onChange={(e) => setQ(e.target.value)} />
         <div className="segs">
           {seg('crew', `My crew${crewCount ? ` · ${crewCount}` : ''}`, unreadIn((r) => r.ownedBot))}
