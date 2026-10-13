@@ -31,6 +31,9 @@ export default function App() {
   const [open, setOpen] = useState<Chat | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [draft, setDraft] = useState('')
+  const msgsRef = useRef<HTMLDivElement | null>(null)
+  // newest message at the bottom, like Telegram: stick to the end when messages change
+  useEffect(() => { const el = msgsRef.current; if (el) el.scrollTop = el.scrollHeight }, [msgs])
 
   useEffect(() => {
     let alive = true
@@ -142,7 +145,7 @@ export default function App() {
   return (
     <div className="conv">
       <header><button onClick={() => setOpen(null)}>‹</button> {open.title}</header>
-      <div className="msgs">
+      <div className="msgs" ref={msgsRef}>
         {msgs.map((m) => (
           <div key={m.id} className={`bubble ${m.out ? 'out' : 'in'}`}>
             <MessageMarkdown text={m.md} />
