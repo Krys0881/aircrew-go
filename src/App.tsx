@@ -4,6 +4,8 @@ import { CREDS } from './creds'
 import { ftToMarkdown, type FT } from './tdmd'
 import { ChatStore, type ChatRow } from './chats'
 import { ChatList, Avatar } from './ChatList'
+import { mediaOf, fileStateOf, autoDownload, MediaView, type Media, type FileState } from './media'
+import { TdJson } from './td'
 import { MessageMarkdown } from '@aircrew/components/MessageMarkdown'
 import 'katex/dist/katex.min.css'
 import '@aircrew/styles.css'   // the Mac app's own stylesheet — one design for both apps
@@ -20,19 +22,25 @@ function useWide(): boolean {
   useEffect(() => { const m = window.matchMedia(mq); const f = () => setW(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f) }, [])
   return w
 }
-type Msg = { id: number; out: boolean; md: string; author: string; date: number; buttons?: { text: string; data?: string }[][] }
+type Msg = { id: number; out: boolean; md: string; author: string; date: number; media?: Media; buttons?: { text: string; data?: string }[][] }
 const fmtTime = (unix: number) => new Date(unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 function mdOf(c: Any = {}): string {
-  return c['@type'] === 'messageText' ? ftToMarkdown(c.text as FT)
-    : c.caption ? ftToMarkdown(c.caption as FT) : `_[${String(c['@type'] ?? '?').replace('message', '')}]_`
+  if (c['@type'] === 'messageText') return ftToMarkdown(c.text as FT)
+  if (mediaOf(c).media) return c.caption ? ftToMarkdown(c.caption as FT) : ''   // the media itself is rendered
+  if (c['@type'] === 'messageSticker') return c.sticker?.emoji ?? ''
+  return c.caption ? ftToMarkdown(c.caption as FT) : `_[${String(c['@type'] ?? '?').replace('message', '')}]_`
 }
+// TDLib file objects seen in messages -> initial download state (shared by all bubbles)
+let seedFiles: (files: Any[]) => void = () => {}
 function buttonsOf(rm: Any | undefined): Msg['buttons'] {
   return rm?.['@type'] === 'replyMarkupInlineKeyboard'
     ? (rm.rows as Any[][]).map((row) => row.map((b) => ({ text: b.text, data: b.type?.data }))) : undefined
 }
 function msgOf(m: Any, chat?: ChatRow): Msg {
-  return { id: m.id, out: !!m.is_outgoing, md: mdOf(m.content), author: store.authorOf(m, chat), date: m.date ?? 0, buttons: buttonsOf(m.reply_markup) }
+  const { media, files } = mediaOf(m.content)
+  if (files.length) seedFiles(files)
+  return { id: m.id, out: !!m.is_outgoing, md: mdOf(m.content), author: store.authorOf(m, chat), date: m.date ?? 0, media, buttons: buttonsOf(m.reply_markup) }
 }
 
 export default function App() {
@@ -43,6 +51,29 @@ export default function App() {
   const [err, setErr] = useState('')
   const [chats, setChats] = useState<Chat[]>([])
   const wide = useWide()
+  const [files, setFiles] = useState<Record<number, FileState>>({})
+  const [zoom, setZoom] = useState<string | null>(null)
+  const [notice, setNotice] = useState('')
+  const requested = useRef(new Set<number>())
+  seedFiles = (fs) => setFiles((prev) => {
+    let next = prev
+    for (const f of fs) { const st = fileStateOf(f); if (st && !prev[st.id]) next = { ...next, [st.id]: st } }
+    return next
+  })
+  function download(fileId: number, priority = 32) {
+    const c = td.current; if (!c) return
+    requested.current.add(fileId)
+    setFiles((prev) => ({ ...prev, [fileId]: { ...(prev[fileId] ?? { id: fileId, size: 0, got: 0, done: false }), busy: true } }))
+    void c.invoke<Any>({ '@type': 'downloadFile', file_id: fileId, priority, offset: 0, limit: 0, synchronous: false })
+      .then((f) => { const st = fileStateOf(f); if (st) setFiles((prev) => ({ ...prev, [st.id]: { ...st, busy: !st.done } })) })
+      .catch(() => setFiles((prev) => ({ ...prev, [fileId]: { ...(prev[fileId] as FileState), busy: false } })))
+  }
+  async function openFile(path: string, mime: string, apk: boolean) {
+    try {
+      const r = await TdJson.openFile({ path, mime })
+      if (r?.needsPermission) setNotice(apk ? 'Allow “Install unknown apps” for Aircrew Go, then tap the file again.' : 'Permission needed — tap again after allowing it.')
+    } catch (e) { setNotice((e as Any)?.message ?? 'Cannot open this file') }
+  }
   const [listHidden, setListHidden] = useState(() => localStorage.getItem('ago.listHidden') === '1')
   const toggleList = () => setListHidden((h) => { localStorage.setItem('ago.listHidden', h ? '0' : '1'); return !h })
   useEffect(() => store.onChange(() => {
@@ -59,6 +90,12 @@ export default function App() {
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [draft, setDraft] = useState('')
   const msgsRef = useRef<HTMLDivElement | null>(null)
+  useEffect(() => {
+    for (const m of msgs) {
+      if (!m.media || requested.current.has(m.media.fileId)) continue
+      if (autoDownload(m.media, files[m.media.fileId])) download(m.media.fileId, m.media.kind === 'photo' ? 8 : 4)
+    }
+  }, [msgs, files])
   // newest message at the bottom, like Telegram: stick to the end when messages change
   useEffect(() => { const el = msgsRef.current; if (el) el.scrollTop = el.scrollHeight }, [msgs])
 
@@ -69,11 +106,16 @@ export default function App() {
       td.current = c
       c.on('update', (u) => {
         store.handle(u as Any)
+        if (u['@type'] === 'updateFile') {
+          const st = fileStateOf((u as Any).file)
+          if (st) setFiles((prev) => (prev[st.id] || requested.current.has(st.id) ? { ...prev, [st.id]: { ...st, busy: !st.done } } : prev))
+        }
         if (u['@type'] === 'updateAuthorizationState') void onAuth(c, (u as Any).authorization_state)
         if (u['@type'] === 'updateNewMessage') {
           const m = (u as Any).message
           if (openRef.current && m.chat_id === openRef.current.id) {
-            setMsgs((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, msgOf(m, openRef.current ?? undefined)]))
+            const nm = msgOf(m, openRef.current ?? undefined)
+            setMsgs((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, nm]))
             void c.invoke({ '@type': 'viewMessages', chat_id: m.chat_id, message_ids: [m.id], force_read: true }).catch(() => undefined)
           }
         }
@@ -81,14 +123,20 @@ export default function App() {
         // without these handlers Go kept showing the placeholder (Chris, 2026-10-13).
         const x = u as Any
         const here = openRef.current && x.chat_id === openRef.current.id
-        if (here && x['@type'] === 'updateMessageContent')
-          setMsgs((prev) => prev.map((m) => (m.id === x.message_id ? { ...m, md: mdOf(x.new_content) } : m)))
+        if (here && x['@type'] === 'updateMessageContent') {
+          const md = mdOf(x.new_content); const r = mediaOf(x.new_content)
+          if (r.files.length) seedFiles(r.files)
+          setMsgs((prev) => prev.map((m) => (m.id === x.message_id ? { ...m, md, media: r.media } : m)))
+        }
         if (here && x['@type'] === 'updateMessageEdited')
           setMsgs((prev) => prev.map((m) => (m.id === x.message_id ? { ...m, buttons: buttonsOf(x.reply_markup) } : m)))
         if (here && x['@type'] === 'updateDeleteMessages' && x.is_permanent)
           setMsgs((prev) => prev.filter((m) => !(x.message_ids as number[]).includes(m.id)))
         if (x['@type'] === 'updateMessageSendSucceeded' && openRef.current && x.message?.chat_id === openRef.current.id)
-          setMsgs((prev) => prev.map((m) => (m.id === x.old_message_id ? msgOf(x.message, openRef.current ?? undefined) : m)))
+        {
+          const nm = msgOf(x.message, openRef.current ?? undefined)
+          setMsgs((prev) => prev.map((m) => (m.id === x.old_message_id ? nm : m)))
+        }
       })
     })().catch((e) => setErr(String(e?.message ?? JSON.stringify(e))))
     return () => { alive = false }
@@ -212,7 +260,9 @@ export default function App() {
           <div key={m.id} className={`msg ${m.out ? 'out' : 'in'}`}>
             <div className="bubble">
               <div className="msg-head"><span className="author">{m.author}</span><span className="time">{fmtTime(m.date)}</span></div>
-              <MessageMarkdown text={m.md} />
+              {m.media && <MediaView media={m.media} f={files[m.media.fileId]} onDownload={() => download(m.media!.fileId)}
+                onOpen={(p, mime, apk) => void openFile(p, mime, apk)} onZoom={setZoom} />}
+              {m.md && <MessageMarkdown text={m.md} />}
               {m.buttons && <div className="msg-buttons">{m.buttons.map((row, i) => (
                 <div key={i} className="msg-btn-row">{row.map((b, j) => (
                   <button key={j} className="msg-btn" onClick={() => void press(m, b.data)}>{b.text}</button>))}</div>))}</div>}
@@ -228,6 +278,10 @@ export default function App() {
       </div>
     </div>) : <div className="conversation empty-pane"><img className="go-logo big" src="/logo.png" alt="" /><div>Pick a chat from your crew</div></div>
 
-  if (wide) return <div className={`split${listHidden && open ? ' hidden' : ''}`}>{!(listHidden && open) && list}{conv}</div>
-  return open ? conv : list
+  const overlays = <>
+    {zoom && <div className="go-zoom" onClick={() => setZoom(null)}><img src={zoom} alt="" /></div>}
+    {notice && <div className="go-notice" onClick={() => setNotice('')}>{notice}</div>}
+  </>
+  if (wide) return <><div className={`split${listHidden && open ? ' hidden' : ''}`}>{!(listHidden && open) && list}{conv}</div>{overlays}</>
+  return <>{open ? conv : list}{overlays}</>
 }

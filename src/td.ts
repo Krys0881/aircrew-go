@@ -7,6 +7,7 @@ interface TdJsonPlugin {
   create(): Promise<{ clientId: number; filesDir: string; cacheDir: string }>
   send(o: { clientId: number; json: string }): Promise<void>
   execute(o: { json: string }): Promise<{ json: string | null }>
+  openFile(o: { path: string; mime?: string }): Promise<{ needsPermission?: boolean }>
   addListener(ev: 'td', cb: (e: { json: string }) => void): Promise<{ remove: () => void }>
 }
 export const TdJson = registerPlugin<TdJsonPlugin>('TdJson')
