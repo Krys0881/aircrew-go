@@ -16,3 +16,35 @@ header button { background: none; border: 0; color: inherit; font-size: 22px; ma
 .btnrow { display: flex; gap: 6px; margin-top: 6px } .btnrow button { flex: 1; padding: 8px; border-radius: 8px; border: 1px solid #3b82f6; background: #172033; color: #9cc3ff }
 footer { display: flex; gap: 8px; padding: 10px; border-top: 1px solid #222; background: #151821 }
 footer input { flex: 1; padding: 12px; border-radius: 10px; border: 1px solid #333; background: #181b22; color: inherit }
+/* --- chat list v2 --- */
+.list { display: flex; flex-direction: column; height: 100vh; background: #0f1115 }
+.listhead { display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 10px; position: sticky; top: 0; background: #151821; border-bottom: 1px solid #222; z-index: 2 }
+.brand { font-weight: 800; font-size: 18px }
+.search { padding: 9px 12px; border-radius: 10px; border: 1px solid #2a2f3a; background: #0f1115; color: inherit; font-size: 15px }
+.segs { display: flex; gap: 6px }
+.seg { flex: 1; white-space: nowrap; padding: 7px 6px; border-radius: 999px; border: 1px solid #2a2f3a; background: none; color: #aab; font-size: 13px; font-weight: 600; display: flex; align-items: center; justify-content: center; gap: 6px }
+.seg.on { background: #23406e; border-color: #3b82f6; color: #fff }
+.segdot { background: #3b82f6; color: #fff; border-radius: 999px; font-size: 11px; padding: 0 6px; line-height: 17px }
+.rows { flex: 1; overflow-y: auto }
+.empty { padding: 32px; text-align: center; opacity: .6 }
+.row { display: flex; gap: 12px; align-items: center; width: 100%; padding: 9px 14px; background: none; border: 0; color: inherit; text-align: left }
+.row:active, .row.sel { background: #1b2233 }
+.avatar { border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; object-fit: cover }
+.rmain { flex: 1; min-width: 0; border-bottom: 1px solid #1a1d25; padding-bottom: 9px }
+.rtop, .rbot { display: flex; align-items: center; gap: 8px }
+.rtitle { flex: 1; min-width: 0; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+.rtitle.b { font-weight: 800 }
+.tag { margin-left: 6px; font-size: 10px; font-weight: 700; color: #9cc3ff; border: 1px solid #3b82f6; border-radius: 4px; padding: 0 4px; vertical-align: 2px }
+.rtime { font-size: 12px; opacity: .55; flex: 0 0 auto }
+.rprev { flex: 1; min-width: 0; font-size: 14px; opacity: .65; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 2px }
+.you { color: #9cc3ff; opacity: 1 }
+.pin { font-size: 12px; opacity: .6 }
+.ubadge { flex: 0 0 auto; min-width: 20px; height: 20px; padding: 0 6px; border-radius: 999px; background: #3b82f6; color: #fff; font-size: 12px; font-weight: 700; display: flex; align-items: center; justify-content: center }
+.ubadge.muted { background: #4b5263 }
+.convhead { display: flex; align-items: center; gap: 10px }
+.convhead .back { background: none; border: 0; color: inherit; font-size: 26px; padding: 0 4px }
+.ctitle { font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis }
+/* unfolded Fold / tablets: list + chat side by side */
+.split { display: grid; grid-template-columns: minmax(300px, 380px) 1fr; height: 100vh }
+.split .list { border-right: 1px solid #222 }
+.placeholder { align-items: center; justify-content: center; opacity: .5 }

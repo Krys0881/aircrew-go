@@ -2,13 +2,23 @@ import { useEffect, useRef, useState } from 'react'
 import { TdClient } from './td'
 import { CREDS } from './creds'
 import { ftToMarkdown, type FT } from './tdmd'
+import { ChatStore, type ChatRow } from './chats'
+import { ChatList, Avatar } from './ChatList'
 import { MessageMarkdown } from '@aircrew/components/MessageMarkdown'
 import 'katex/dist/katex.min.css'
 import './app.css'
 
 type Any = Record<string, any>
 type Auth = 'loading' | 'phone' | 'code' | 'password' | 'ready' | 'other'
-type Chat = { id: number; title: string; last: string }
+type Chat = ChatRow
+const store = new ChatStore()
+const wantedPhotos = new Set<number>()
+function useWide(): boolean {
+  const mq = '(min-width: 720px)'
+  const [w, setW] = useState(() => window.matchMedia(mq).matches)
+  useEffect(() => { const m = window.matchMedia(mq); const f = () => setW(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f) }, [])
+  return w
+}
 type Msg = { id: number; out: boolean; md: string; buttons?: { text: string; data?: string }[][] }
 
 function msgOf(m: Any): Msg {
@@ -28,6 +38,17 @@ export default function App() {
   const [input, setInput] = useState('')
   const [err, setErr] = useState('')
   const [chats, setChats] = useState<Chat[]>([])
+  const wide = useWide()
+  useEffect(() => store.onChange(() => {
+    setChats(store.sorted())
+    const c = td.current; if (!c) return
+    for (const r of store.rows.values()) {           // fetch avatars lazily, once each
+      if (r.photoFileId && !r.photoPath && !wantedPhotos.has(r.photoFileId)) {
+        wantedPhotos.add(r.photoFileId)
+        void c.invoke({ '@type': 'downloadFile', file_id: r.photoFileId, priority: 1, offset: 0, limit: 0, synchronous: false }).catch(() => undefined)
+      }
+    }
+  }), [])
   const [open, setOpen] = useState<Chat | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [draft, setDraft] = useState('')
@@ -41,10 +62,14 @@ export default function App() {
       const c = await TdClient.create(); if (!alive) return
       td.current = c
       c.on('update', (u) => {
+        store.handle(u as Any)
         if (u['@type'] === 'updateAuthorizationState') void onAuth(c, (u as Any).authorization_state)
         if (u['@type'] === 'updateNewMessage') {
           const m = (u as Any).message
-          setMsgs((prev) => (openRef.current && m.chat_id === openRef.current.id ? [...prev, msgOf(m)] : prev))
+          if (openRef.current && m.chat_id === openRef.current.id) {
+            setMsgs((prev) => (prev.some((x) => x.id === m.id) ? prev : [...prev, msgOf(m)]))
+            void c.invoke({ '@type': 'viewMessages', chat_id: m.chat_id, message_ids: [m.id], force_read: true }).catch(() => undefined)
+          }
         }
       })
     })().catch((e) => setErr(String(e?.message ?? JSON.stringify(e))))
@@ -85,19 +110,20 @@ export default function App() {
   }
 
   async function loadChats(c: TdClient) {
-    await c.invoke({ '@type': 'loadChats', chat_list: { '@type': 'chatListMain' }, limit: 40 }).catch(() => undefined)
-    const r = await c.invoke<Any>({ '@type': 'getChats', chat_list: { '@type': 'chatListMain' }, limit: 40 })
-    const list: Chat[] = []
-    for (const id of r.chat_ids as number[]) {
-      const ch = await c.invoke<Any>({ '@type': 'getChat', chat_id: id })
-      const lm = ch.last_message ? msgOf(ch.last_message).md.slice(0, 80) : ''
-      list.push({ id, title: ch.title, last: lm })
+    const me = await c.invoke<Any>({ '@type': 'getMe' }).catch(() => null)
+    if (me) store.myId = me.id
+    // TDLib streams updateNewChat for every chat it loads; loadChats returns 404 once all are in.
+    for (let i = 0; i < 6; i++) {
+      const ok = await c.invoke({ '@type': 'loadChats', chat_list: { '@type': 'chatListMain' }, limit: 100 }).then(() => true).catch(() => false)
+      if (!ok) break
     }
-    setChats(list)
+    setChats(store.sorted())
   }
 
   async function openChat(ch: Chat) {
-    const c = td.current!; setOpen(ch); setMsgs([])
+    const c = td.current!
+    if (openRef.current && openRef.current.id !== ch.id) void c.invoke({ '@type': 'closeChat', chat_id: openRef.current.id }).catch(() => undefined)
+    setOpen(ch); setMsgs([])
     await c.invoke({ '@type': 'openChat', chat_id: ch.id })
     let all: Any[] = []; let from = 0
     for (let i = 0; i < 3 && all.length < 30; i++) {           // first call often returns 1 msg
@@ -106,6 +132,12 @@ export default function App() {
       all = all.concat(ms); from = ms[ms.length - 1].id
     }
     setMsgs(all.reverse().map(msgOf))
+    if (all.length) void c.invoke({ '@type': 'viewMessages', chat_id: ch.id, message_ids: all.map((m) => m.id), force_read: true }).catch(() => undefined)
+  }
+  function closeOpen() {
+    const c = td.current
+    if (c && openRef.current) void c.invoke({ '@type': 'closeChat', chat_id: openRef.current.id }).catch(() => undefined)
+    setOpen(null)
   }
 
   async function send() {
@@ -134,17 +166,14 @@ export default function App() {
       {err && <p className="err">{err}</p>}
     </div>)
 
-  if (!open) return (
-    <div className="list">
-      <header>✈️ Aircrew Go <span className="sub">{chats.length} chats</span></header>
-      {chats.map((ch) => (
-        <button key={ch.id} className="chat" onClick={() => void openChat(ch)}>
-          <b>{ch.title}</b><span>{ch.last}</span></button>))}
-    </div>)
-
-  return (
+  const list = <ChatList rows={chats} selected={open?.id} onOpen={(r) => void openChat(r)} />
+  const conv = open ? (
     <div className="conv">
-      <header><button onClick={() => setOpen(null)}>‹</button> {open.title}</header>
+      <header className="convhead">
+        {!wide && <button className="back" onClick={closeOpen}>‹</button>}
+        <Avatar row={open} size={34} />
+        <span className="ctitle">{open.title}</span>
+      </header>
       <div className="msgs" ref={msgsRef}>
         {msgs.map((m) => (
           <div key={m.id} className={`bubble ${m.out ? 'out' : 'in'}`}>
@@ -155,5 +184,8 @@ export default function App() {
       </div>
       <footer><input value={draft} onChange={(e) => setDraft(e.target.value)} placeholder="Message"
         onKeyDown={(e) => e.key === 'Enter' && void send()} /><button onClick={() => void send()}>Send</button></footer>
-    </div>)
+    </div>) : <div className="conv placeholder"><div>Pick a chat</div></div>
+
+  if (wide) return <div className="split">{list}{conv}</div>
+  return open ? conv : list
 }
