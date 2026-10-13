@@ -23,14 +23,16 @@ function useWide(): boolean {
 type Msg = { id: number; out: boolean; md: string; author: string; date: number; buttons?: { text: string; data?: string }[][] }
 const fmtTime = (unix: number) => new Date(unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
-function msgOf(m: Any, chat?: ChatRow): Msg {
-  const c = m.content ?? {}
-  const md = c['@type'] === 'messageText' ? ftToMarkdown(c.text as FT)
+function mdOf(c: Any = {}): string {
+  return c['@type'] === 'messageText' ? ftToMarkdown(c.text as FT)
     : c.caption ? ftToMarkdown(c.caption as FT) : `_[${String(c['@type'] ?? '?').replace('message', '')}]_`
-  const rm = m.reply_markup
-  const buttons = rm?.['@type'] === 'replyMarkupInlineKeyboard'
+}
+function buttonsOf(rm: Any | undefined): Msg['buttons'] {
+  return rm?.['@type'] === 'replyMarkupInlineKeyboard'
     ? (rm.rows as Any[][]).map((row) => row.map((b) => ({ text: b.text, data: b.type?.data }))) : undefined
-  return { id: m.id, out: !!m.is_outgoing, md, author: store.authorOf(m, chat), date: m.date ?? 0, buttons }
+}
+function msgOf(m: Any, chat?: ChatRow): Msg {
+  return { id: m.id, out: !!m.is_outgoing, md: mdOf(m.content), author: store.authorOf(m, chat), date: m.date ?? 0, buttons: buttonsOf(m.reply_markup) }
 }
 
 export default function App() {
@@ -75,11 +77,28 @@ export default function App() {
             void c.invoke({ '@type': 'viewMessages', chat_id: m.chat_id, message_ids: [m.id], force_read: true }).catch(() => undefined)
           }
         }
+        // Agents STREAM: the bot sends "⏳ working…" and then EDITS that message until the final answer —
+        // without these handlers Go kept showing the placeholder (Chris, 2026-10-13).
+        const x = u as Any
+        const here = openRef.current && x.chat_id === openRef.current.id
+        if (here && x['@type'] === 'updateMessageContent')
+          setMsgs((prev) => prev.map((m) => (m.id === x.message_id ? { ...m, md: mdOf(x.new_content) } : m)))
+        if (here && x['@type'] === 'updateMessageEdited')
+          setMsgs((prev) => prev.map((m) => (m.id === x.message_id ? { ...m, buttons: buttonsOf(x.reply_markup) } : m)))
+        if (here && x['@type'] === 'updateDeleteMessages' && x.is_permanent)
+          setMsgs((prev) => prev.filter((m) => !(x.message_ids as number[]).includes(m.id)))
+        if (x['@type'] === 'updateMessageSendSucceeded' && openRef.current && x.message?.chat_id === openRef.current.id)
+          setMsgs((prev) => prev.map((m) => (m.id === x.old_message_id ? msgOf(x.message, openRef.current ?? undefined) : m)))
       })
     })().catch((e) => setErr(String(e?.message ?? JSON.stringify(e))))
     return () => { alive = false }
   }, [])
   const openRef = useRef<Chat | null>(null)
+  useEffect(() => {
+    const onVis = () => { if (document.visibilityState === 'visible' && openRef.current) void reloadHistory(openRef.current) }
+    document.addEventListener('visibilitychange', onVis)
+    return () => document.removeEventListener('visibilitychange', onVis)
+  }, [])
   useEffect(() => { openRef.current = open }, [open])
 
   async function onAuth(c: TdClient, s: Any) {
@@ -129,6 +148,10 @@ export default function App() {
     if (openRef.current && openRef.current.id !== ch.id) void c.invoke({ '@type': 'closeChat', chat_id: openRef.current.id }).catch(() => undefined)
     setOpen(ch); setMsgs([])
     await c.invoke({ '@type': 'openChat', chat_id: ch.id })
+    await reloadHistory(ch)
+  }
+  async function reloadHistory(ch: Chat) {
+    const c = td.current!
     let all: Any[] = []; let from = 0
     for (let i = 0; i < 3 && all.length < 30; i++) {           // first call often returns 1 msg
       const r = await c.invoke<Any>({ '@type': 'getChatHistory', chat_id: ch.id, from_message_id: from, offset: 0, limit: 30, only_local: false })

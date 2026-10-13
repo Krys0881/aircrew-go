@@ -4,7 +4,7 @@ export type Kind = 'self' | 'bot' | 'private' | 'group' | 'channel'
 export type ChatRow = {
   id: number; title: string; kind: Kind; userId?: number; ownedBot: boolean
   order: bigint; pinned: boolean; unread: number; markedUnread: boolean; muted: boolean
-  lastText: string; lastOut: boolean; lastDate: number; photoFileId?: number; photoPath?: string
+  lastText: string; lastOut: boolean; lastDate: number; lastMsgId?: number; photoFileId?: number; photoPath?: string
 }
 
 export function previewOf(content: Any | undefined): string {
@@ -59,7 +59,7 @@ export class ChatStore {
   private applyLast(r: ChatRow, m: Any | undefined) {
     if (!m) return
     r.lastText = previewOf(m.content).replace(/\s+/g, ' ').trim()
-    r.lastOut = !!m.is_outgoing; r.lastDate = m.date ?? 0
+    r.lastOut = !!m.is_outgoing; r.lastDate = m.date ?? 0; r.lastMsgId = m.id
   }
   handle(u: Any): void {
     switch (u['@type']) {
@@ -92,6 +92,11 @@ export class ChatStore {
       case 'updateChatLastMessage': {
         const r = this.rows.get(u.chat_id); if (!r) break
         this.applyLast(r, u.last_message); this.applyPositions(r, u.positions); break
+      }
+      case 'updateMessageContent': {      // streamed/edited last message -> keep the preview current
+        const r = this.rows.get(u.chat_id)
+        if (!r || r.lastMsgId !== u.message_id) return
+        r.lastText = previewOf(u.new_content).replace(/\s+/g, ' ').trim(); break
       }
       case 'updateChatPosition': { const r = this.rows.get(u.chat_id); if (r) this.applyPositions(r, [u.position]); break }
       case 'updateChatReadInbox': { const r = this.rows.get(u.chat_id); if (r) r.unread = u.unread_count ?? 0; break }
