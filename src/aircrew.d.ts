@@ -11,4 +11,6 @@ declare module '@aircrew/components/icons' {
   export const PinIcon: I
   export const MuteIcon: I
   export const MoreIcon: I
+  export const PaperclipIcon: I
+  export const XIcon: I
 }

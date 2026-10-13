@@ -7,6 +7,8 @@ import { ChatList, Avatar } from './ChatList'
 import { mediaOf, fileStateOf, autoDownload, MediaView, type Media, type FileState } from './media'
 import { TdJson } from './td'
 import { App as CapApp } from '@capacitor/app'
+import { Filesystem, Directory } from '@capacitor/filesystem'
+import { PaperclipIcon, XIcon } from '@aircrew/components/icons'
 import { MessageMarkdown } from '@aircrew/components/MessageMarkdown'
 import 'katex/dist/katex.min.css'
 import '@aircrew/styles.css'   // the Mac app's own stylesheet — one design for both apps
@@ -90,6 +92,23 @@ export default function App() {
   const [open, setOpen] = useState<Chat | null>(null)
   const [msgs, setMsgs] = useState<Msg[]>([])
   const [draft, setDraft] = useState('')
+  type Outgoing = { path: string; name: string; mime: string; size: number; thumb?: string }
+  const [attach, setAttach] = useState<Outgoing | null>(null)
+  const [sending, setSending] = useState(false)
+  const fileInput = useRef<HTMLInputElement | null>(null)
+  async function pickFile(file: File | undefined) {
+    if (!file) return
+    try {
+      setNotice('')
+      const b64 = await new Promise<string>((res, rej) => {
+        const r = new FileReader(); r.onerror = () => rej(r.error); r.onload = () => res(String(r.result).split(',')[1] ?? ''); r.readAsDataURL(file)
+      })
+      const safe = file.name.replace(/[^\w.\- ]+/g, '_') || 'file'
+      const w = await Filesystem.writeFile({ path: `outgoing/${Date.now()}_${safe}`, data: b64, directory: Directory.Cache, recursive: true })
+      const thumb = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
+      setAttach({ path: decodeURIComponent(w.uri.replace(/^file:\/\//, '')), name: file.name, mime: file.type || 'application/octet-stream', size: file.size, thumb })
+    } catch (e) { setNotice(`Couldn't attach this file: ${(e as Any)?.message ?? e}`) }
+  }
   const msgsRef = useRef<HTMLDivElement | null>(null)
   useEffect(() => {
     for (const m of msgs) {
@@ -217,10 +236,24 @@ export default function App() {
   }
 
   async function send() {
-    if (!open || !draft.trim()) return
-    const text = draft; setDraft('')
-    await td.current!.invoke({ '@type': 'sendMessage', chat_id: open.id,
-      input_message_content: { '@type': 'inputMessageText', text: { '@type': 'formattedText', text } } })
+    if (!open || (!draft.trim() && !attach)) return
+    const text = draft
+    const caption = { '@type': 'formattedText', text }
+    let content: Any
+    if (attach) {
+      const local = { '@type': 'inputFileLocal', path: attach.path }
+      content = /^image\/(jpeg|png|webp)$/.test(attach.mime)
+        ? { '@type': 'inputMessagePhoto', photo: local, added_sticker_file_ids: [], width: 0, height: 0, caption, has_spoiler: false }
+        : { '@type': 'inputMessageDocument', document: local, disable_content_type_detection: false, caption }
+    } else {
+      content = { '@type': 'inputMessageText', text: caption }
+    }
+    setSending(true)
+    try {
+      await td.current!.invoke({ '@type': 'sendMessage', chat_id: open.id, input_message_content: content })
+      setDraft(''); setAttach(null)
+    } catch (e) { setNotice(`Not sent: ${(e as Any)?.message ?? 'error'}`) }
+    finally { setSending(false) }
   }
 
   async function press(m: Msg, data?: string) {
@@ -287,10 +320,17 @@ export default function App() {
             </div>
           </div>))}
       </div>
+      {attach && <div className="attach-tray"><div className="attach-chip">
+        {attach.thumb ? <img className="attach-chip-thumb" src={attach.thumb} alt="" /> : <span className="attach-chip-ico">📎</span>}
+        <span className="attach-chip-name">{attach.name}</span>
+        <button className="attach-chip-x" onClick={() => setAttach(null)} aria-label="Remove"><XIcon size={14} /></button>
+      </div></div>}
       <div className="composer">
-        <textarea className="composer-input" rows={1} value={draft} placeholder="Message…"
+        <button className="composer-attach" onClick={() => fileInput.current?.click()} aria-label="Attach"><PaperclipIcon size={18} /></button>
+        <input ref={fileInput} type="file" hidden onChange={(e) => { void pickFile(e.target.files?.[0]); e.target.value = '' }} />
+        <textarea className="composer-input" rows={1} value={draft} placeholder={attach ? "Add a caption…" : "Message…"}
           onChange={(e) => { setDraft(e.target.value); e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px` }} />
-        <button className="composer-send" disabled={!draft.trim()} onClick={() => void send()} aria-label="Send">
+        <button className="composer-send" disabled={sending || (!draft.trim() && !attach)} onClick={() => void send()} aria-label="Send">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
         </button>
       </div>
