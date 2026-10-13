@@ -1,32 +1,20 @@
-# React + TypeScript + Vite
+# Aircrew Go — Android companion for Aircrew (PERSONAL project)
 
-This template provides a minimal setup to get React working in Vite with HMR and some Oxlint rules.
+Crew-first Android client: Capacitor 8 + React, Telegram via TDLib (JSON interface over JNI),
+messages rendered by the **Mac app's own renderer and stylesheet** (imported from `../ai-gram/src/renderer`
+through the `@aircrew` Vite alias — this repo expects `ai-gram` checked out next to it).
 
-Currently, two official plugins are available:
+## Build (macOS)
+Prereqs (free): `brew install openjdk@17 openjdk@21 cmake gperf` + `brew install --cask android-commandlinetools`;
+SDK: `platform-tools`, `platforms;android-36`, `build-tools;37.0.0`, `cmake;3.22.1`, `ndk;23.2.8568313`.
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+1. **TDLib** (once, ~16 min): clone `tdlib/td`, then in `example/android/`
+   `./build-openssl.sh <SDK> 23.2.8568313` and
+   `./build-tdlib.sh <SDK> 23.2.8568313 third-party/openssl c++_static JSONJava 26 "arm64-v8a"`.
+   Copy `tdlib/libs/arm64-v8a/libtdjsonjava.so` → `android/app/src/main/jniLibs/arm64-v8a/` (gitignored).
+2. **Credentials**: `node scripts/gen-creds.mjs` (reads `../ai-gram/aircrew.keys.json` → `src/creds.ts`, gitignored).
+3. **App**: `npm install && npx vite build && npx cap sync android`, then
+   `cd android && JAVA_HOME=$(brew --prefix openjdk@21) ./gradlew assembleDebug`.
+   APK: `android/app/build/outputs/apk/debug/app-debug.apk` (sideload; keep the same debug keystore to update in place).
 
-## React Compiler
-
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
-
-## Expanding the Oxlint configuration
-
-If you are developing a production application, we recommend enabling type-aware lint rules by installing `oxlint-tsgolint` and editing `.oxlintrc.json`:
-
-```json
-{
-  "$schema": "./node_modules/oxlint/configuration_schema.json",
-  "plugins": ["react", "typescript", "oxc"],
-  "options": {
-    "typeAware": true
-  },
-  "rules": {
-    "react/rules-of-hooks": "error",
-    "react/only-export-components": ["warn", { "allowConstantExport": true }]
-  }
-}
-```
-
-See the [Oxlint rules documentation](https://oxc.rs/docs/guide/usage/linter/rules) for the full list of rules and categories.
+Never commit `src/creds.ts`, `dist/`, `android/app/src/main/assets/public`, `jniLibs`, or keystores.
