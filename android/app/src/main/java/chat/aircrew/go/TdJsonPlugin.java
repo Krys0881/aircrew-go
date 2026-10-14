@@ -3,6 +3,9 @@ package chat.aircrew.go;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.Uri;
 import android.os.Build;
 import android.provider.Settings;
@@ -33,7 +36,70 @@ public class TdJsonPlugin extends Plugin {
     private static int clientId = -1;               // ONE TDLib client per process, reused across JS restarts
 
     @Override
-    public void load() { current = this; }
+    public void load() { current = this; registerNetworkWatch(); }
+
+    // ---- 0.5.4: tell TDLib about network changes the moment Android reports them -------------------------------
+    // Chris: "Connecting…" for a while after every app switch. Samsung blocks a backgrounded app's network while
+    // the process lives; TDLib keeps failing, its retry backoff grows, and after returning the next retry is far
+    // away. TDLib docs: setNetworkType "forces all network connections to reopen … must be called whenever the
+    // network is changed". The WebView's online/offline events don't fire reliably, so do it natively:
+    // default-network callback → on UNBLOCKED (app back in front) / new network / type change → setNetworkType.
+    private static ConnectivityManager.NetworkCallback netWatch;
+    private static String lastType = null;          // last type sent (or seen at registration)
+
+    private void registerNetworkWatch() {
+        synchronized (TdJsonPlugin.class) { if (netWatch != null) return; }
+        ConnectivityManager cm = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        if (cm == null) return;
+        ConnectivityManager.NetworkCallback cb = new ConnectivityManager.NetworkCallback() {
+            @Override public void onAvailable(Network n) { nudge(typeOf(cm, n), "network available", lastType == null); }
+            @Override public void onLost(Network n) { nudge("networkTypeNone", "network lost", false); }
+            @Override public void onCapabilitiesChanged(Network n, NetworkCapabilities c) {
+                String t = typeOf(c);
+                if (lastType != null && !t.equals(lastType) && !"networkTypeNone".equals(lastType)) nudge(t, "network type changed", false);
+            }
+            @Override public void onBlockedStatusChanged(Network n, boolean blocked) {
+                if (blocked) emit("net: Android BLOCKED the app's network (background)");
+                // log only: measured on the emulator, TDLib starts reconnecting by itself on resume (~1.7–2.1 s);
+                // a setNetworkType at/after the unblock RESTARTS that attempt (median 4.3 s). JS rescues if stuck.
+                else emit("net: Android UNBLOCKED the app's network");
+            }
+        };
+        try {
+            cm.registerDefaultNetworkCallback(cb);
+            synchronized (TdJsonPlugin.class) { netWatch = cb; }
+        } catch (RuntimeException e) { emit("net: watch not available: " + e.getMessage()); }
+    }
+
+    private static String typeOf(ConnectivityManager cm, Network n) {
+        return typeOf(cm.getNetworkCapabilities(n));
+    }
+    private static String typeOf(NetworkCapabilities c) {
+        if (c == null) return "networkTypeOther";
+        if (c.hasTransport(NetworkCapabilities.TRANSPORT_WIFI) || c.hasTransport(NetworkCapabilities.TRANSPORT_ETHERNET)) return "networkTypeWiFi";
+        if (c.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) return c.hasCapability(NetworkCapabilities.NET_CAPABILITY_NOT_ROAMING) ? "networkTypeMobile" : "networkTypeMobileRoaming";
+        return "networkTypeOther";
+    }
+
+    /** setNetworkType straight into the shared TDLib client. initial=true only records the type (no reconnect at start). */
+    private static void nudge(String type, String reason, boolean initial) {
+        lastType = type;
+        if (initial) { emit("net: watching (" + type.replace("networkType", "") + ")"); return; }
+        int id;
+        synchronized (TdJsonPlugin.class) { id = clientId; }
+        if (id < 0) return;
+        JsonClient.send(id, "{\"@type\":\"setNetworkType\",\"type\":{\"@type\":\"" + type + "\"}}");
+        emit("net: setNetworkType " + type.replace("networkType", "") + " (" + reason + ")");
+    }
+
+    /** Diagnostics line for the JS ring log (event "net"). */
+    private static void emit(String line) {
+        TdJsonPlugin p = current;
+        if (p == null) return;
+        JSObject ev = new JSObject();
+        ev.put("line", line);
+        p.notifyListeners("net", ev, true);
+    }
 
     private static synchronized void ensureReceiver() {
         if (receiver != null && receiver.isAlive()) return;

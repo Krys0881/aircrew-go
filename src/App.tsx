@@ -16,7 +16,7 @@ import '@aircrew/styles.css'   // the Mac app's own stylesheet — one design fo
 import './app.css'
 
 type Any = Record<string, any>
-const APP_VERSION = '0.5.3'
+const APP_VERSION = '0.5.4'
 type Auth = 'loading' | 'phone' | 'code' | 'password' | 'ready' | 'other'
 type Chat = ChatRow
 const store = new ChatStore()
@@ -65,6 +65,9 @@ export default function App() {
   const [zoom, setZoom] = useState<string | null>(null)
   const [notice, setNotice] = useState('')
   const [conn, setConn] = useState('')    // '' = connected; else "Connecting…" etc. (updateConnectionState)
+  const connRef = useRef('')
+  useEffect(() => { connRef.current = conn }, [conn])
+  const hiddenAt = useRef(0)
   const requested = useRef(new Set<number>())
   seedFiles = (fs) => setFiles((prev) => {
     let next = prev
@@ -193,7 +196,23 @@ export default function App() {
   useEffect(() => {
     const onVis = () => {
       diag(`app: ${document.visibilityState}`)
-      if (document.visibilityState !== 'visible') return
+      if (document.visibilityState !== 'visible') { hiddenAt.current = Date.now(); return }
+      // 0.5.4 (Chris: "Connecting…" for a while after EVERY app switch, on his Samsung): Android cuts a backgrounded
+      // app's connection. Stock Android: TDLib is back in ~2 s on its own (measured on the emulator) — and an
+      // immediate setNetworkType there made it SLOWER (interrupts a reconnect in flight). Samsung: background network
+      // stays blocked while the app lives, TDLib's retry backoff grows, and the next retry can be far away.
+      // Measured (emulator, 26 switches): TDLib reconnects by itself in ~1.8 s, but ~1/3 of the time it gets stuck;
+      // a nudge lands ~1.3 s later. A nudge BEFORE ~2.5 s restarts a healthy reconnect (median 4.3 s). So: leave it
+      // alone; if still not connected after 3 s, force a reopen; then every 4 s, max 3 times.
+      const away = hiddenAt.current ? Math.round((Date.now() - hiddenAt.current) / 1000) : 0
+      let tries = 0
+      const rescue = () => {
+        if (!connRef.current || document.visibilityState !== 'visible' || tries >= 3) return
+        tries++
+        void nudgeNetwork(`resume after ${away} s away: still "${connRef.current}" (try ${tries})`)
+        window.setTimeout(rescue, 4000)
+      }
+      window.setTimeout(rescue, 3000)
       void healthCheck()
       if (openRef.current) void reloadHistory(openRef.current, true)
     }
@@ -295,6 +314,18 @@ export default function App() {
 
   // Resume self-heal: if TDLib doesn't answer a trivial request, the page lost its bridge — reload re-attaches
   // to the SAME TDLib client (native keeps it) instead of leaving a deaf UI.
+  // TDLib: "setNetworkType … forces all network connections to reopen … must be called whenever the network is
+  // changed, even if the network type remains the same" — the official clients do this; Go never did (≤0.5.3).
+  async function nudgeNetwork(reason: string) {
+    const c = td.current; if (!c) return
+    const nt = String((navigator as Any).connection?.type ?? '')
+    const type = !navigator.onLine || nt === 'none' ? 'networkTypeNone' : nt === 'wifi' ? 'networkTypeWiFi'
+      : nt === 'cellular' ? 'networkTypeMobile' : 'networkTypeOther'
+    diag(`net: setNetworkType ${type.replace('networkType', '')} (${reason})`)
+    await c.invoke({ '@type': 'setNetworkType', type: { '@type': type } }, 5000)
+      .catch((e) => diag(`net: setNetworkType failed: ${(e as Any)?.message ?? e}`))
+  }
+
   async function healthCheck() {
     const c = td.current; if (!c) return
     try { await c.invoke({ '@type': 'getOption', name: 'version' }, 6000) }

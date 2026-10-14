@@ -10,6 +10,7 @@ interface TdJsonPlugin {
   execute(o: { json: string }): Promise<{ json: string | null }>
   openFile(o: { path: string; mime?: string }): Promise<{ needsPermission?: boolean }>
   addListener(ev: 'td', cb: (e: { json: string }) => void): Promise<{ remove: () => void }>
+  addListener(ev: 'net', cb: (e: { line: string }) => void): Promise<{ remove: () => void }>
 }
 export const TdJson = registerPlugin<TdJsonPlugin>('TdJson')
 
@@ -28,6 +29,7 @@ export class TdClient {
     const { clientId, filesDir, reused } = await TdJson.create({ fresh })
     const c = new TdClient(clientId, filesDir, !!reused)
     await TdJson.addListener('td', (e) => c.dispatch(e.json))
+    await TdJson.addListener('net', (e) => diag(e.line))      // native network watch (0.5.4)
     diag(`td: client ${clientId} ${reused ? 'REUSED (JS restarted, TDLib kept)' : 'new'}`)
     // TDLib only starts emitting updates for a client after its first request.
     void c.invoke({ '@type': 'getOption', name: 'version' }).catch(() => undefined)
