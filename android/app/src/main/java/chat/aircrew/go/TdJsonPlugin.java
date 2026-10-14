@@ -19,20 +19,32 @@ import org.drinkless.tdlib.JsonClient;
  * Thin bridge to TDLib's JSON interface (libtdjsonjava.so, built with TDLIB_INTERFACE=JSONJava).
  * One global receive loop delivers every TDLib response/update to JS as a raw JSON string
  * (event "td"); the JS shim (src/td.ts) routes by @client_id and @extra.
+ *
+ * 0.5.3 (Chris: "sometimes I'm not able to send messages"): Android may recreate the WebView/bridge
+ * while the process (and TDLib) lives on. Before, every JS start created a NEW TDLib client on the same
+ * database (→ "Can't lock file") and the static receive loop kept notifying the FIRST, dead plugin
+ * instance (→ the page went deaf: no answers, Send stuck). Now: ONE TDLib client per process, reused
+ * across JS restarts, and events always go to the live plugin instance.
  */
 @CapacitorPlugin(name = "TdJson")
 public class TdJsonPlugin extends Plugin {
     private static volatile Thread receiver;
+    private static volatile TdJsonPlugin current;   // the LIVE plugin instance (the bridge can be recreated)
+    private static int clientId = -1;               // ONE TDLib client per process, reused across JS restarts
 
-    private synchronized void ensureReceiver() {
+    @Override
+    public void load() { current = this; }
+
+    private static synchronized void ensureReceiver() {
         if (receiver != null && receiver.isAlive()) return;
         receiver = new Thread(() -> {
             while (!Thread.currentThread().isInterrupted()) {
                 String s = JsonClient.receive(1.0);
-                if (s != null) {
+                TdJsonPlugin p = current;
+                if (s != null && p != null) {
                     JSObject ev = new JSObject();
                     ev.put("json", s);
-                    notifyListeners("td", ev);
+                    p.notifyListeners("td", ev);
                 }
             }
         }, "tdlib-receive");
@@ -42,10 +54,19 @@ public class TdJsonPlugin extends Plugin {
 
     @PluginMethod
     public void create(PluginCall call) {
-        int id = JsonClient.createClientId();
+        boolean fresh = Boolean.TRUE.equals(call.getBoolean("fresh", false));   // e.g. after authorizationStateClosed
+        boolean reused;
+        int id;
+        synchronized (TdJsonPlugin.class) {
+            reused = clientId >= 0 && !fresh;
+            if (!reused) clientId = JsonClient.createClientId();
+            id = clientId;
+        }
+        current = this;
         ensureReceiver();
         JSObject r = new JSObject();
         r.put("clientId", id);
+        r.put("reused", reused);
         r.put("filesDir", getContext().getFilesDir().getAbsolutePath());
         r.put("cacheDir", getContext().getCacheDir().getAbsolutePath());
         call.resolve(r);

@@ -1,3 +1,4 @@
+import type React from 'react'
 import { useMemo, useState } from 'react'
 import { Capacitor } from '@capacitor/core'
 import { BotIcon, PinIcon, MuteIcon } from '@aircrew/components/icons'
@@ -16,7 +17,8 @@ export function Avatar({ row, size }: { row: ChatRow; size?: number }) {
 }
 
 type Scope = 'crew' | 'all'
-export function ChatList({ rows, selected, onOpen }: { rows: ChatRow[]; selected?: number; onOpen: (r: ChatRow) => void }) {
+export function ChatList({ rows, selected, onOpen, onDiag, banner }: { rows: ChatRow[]; selected?: number; onOpen: (r: ChatRow) => void
+  onDiag?: () => void; banner?: React.ReactNode }) {
   const crewCount = rows.filter((r) => r.ownedBot).length
   const [scope, setScope] = useState<Scope | null>(() => (localStorage.getItem('ago.scope') as Scope | null))
   const eff: Scope = scope ?? (crewCount ? 'crew' : 'all')
@@ -32,7 +34,11 @@ export function ChatList({ rows, selected, onOpen }: { rows: ChatRow[]; selected
       <div className="go-top">
         <img className="go-logo" src="/logo.png" alt="" />
         <span className="go-brand">Aircrew <span className="go-word">Go</span></span>
+        {onDiag && <button className="go-icon-btn go-diag" onClick={onDiag} title="Send log to Ada" aria-label="Send log to Ada">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="22 12 18 12 15 21 9 3 6 12 2 12" /></svg></button>}
       </div>
+      {banner}
       <div className="toolbar">
         <input className="search" placeholder="Search chats…" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>

@@ -6,8 +6,9 @@ import { ChatStore, type ChatRow } from './chats'
 import { ChatList, Avatar } from './ChatList'
 import { mediaOf, fileStateOf, autoDownload, MediaView, type Media, type FileState } from './media'
 import { TdJson } from './td'
+import { diag, diagText } from './diag'
 import { App as CapApp } from '@capacitor/app'
-import { Filesystem, Directory } from '@capacitor/filesystem'
+import { Filesystem, Directory, Encoding } from '@capacitor/filesystem'
 import { PaperclipIcon, XIcon } from '@aircrew/components/icons'
 import { MessageMarkdown } from '@aircrew/components/MessageMarkdown'
 import 'katex/dist/katex.min.css'
@@ -15,6 +16,7 @@ import '@aircrew/styles.css'   // the Mac app's own stylesheet — one design fo
 import './app.css'
 
 type Any = Record<string, any>
+const APP_VERSION = '0.5.3'
 type Auth = 'loading' | 'phone' | 'code' | 'password' | 'ready' | 'other'
 type Chat = ChatRow
 const store = new ChatStore()
@@ -25,7 +27,9 @@ function useWide(): boolean {
   useEffect(() => { const m = window.matchMedia(mq); const f = () => setW(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f) }, [])
   return w
 }
-type Msg = { id: number; out: boolean; md: string; author: string; date: number; media?: Media; buttons?: { text: string; data?: string }[][] }
+type Msg = { id: number; out: boolean; md: string; author: string; date: number; media?: Media; buttons?: { text: string; data?: string }[][]
+  state?: 'pending' | 'failed'; err?: string }   // outgoing delivery state (0.5.3): pending 🕓 · failed ⚠️ + Retry
+const sendErrOf = (x: Any | undefined): string => x?.message ?? x?.error_message ?? ''
 const fmtTime = (unix: number) => new Date(unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
 function mdOf(c: Any = {}): string {
@@ -43,7 +47,10 @@ function buttonsOf(rm: Any | undefined): Msg['buttons'] {
 function msgOf(m: Any, chat?: ChatRow): Msg {
   const { media, files } = mediaOf(m.content)
   if (files.length) seedFiles(files)
-  return { id: m.id, out: !!m.is_outgoing, md: mdOf(m.content), author: store.authorOf(m, chat), date: m.date ?? 0, media, buttons: buttonsOf(m.reply_markup) }
+  const ss = m.sending_state
+  const st = ss?.['@type'] === 'messageSendingStatePending' ? 'pending' : ss?.['@type'] === 'messageSendingStateFailed' ? 'failed' : undefined
+  return { id: m.id, out: !!m.is_outgoing, md: mdOf(m.content), author: store.authorOf(m, chat), date: m.date ?? 0, media, buttons: buttonsOf(m.reply_markup),
+    state: st, err: st === 'failed' ? sendErrOf(ss.error ?? ss) : undefined }
 }
 
 export default function App() {
@@ -57,6 +64,7 @@ export default function App() {
   const [files, setFiles] = useState<Record<number, FileState>>({})
   const [zoom, setZoom] = useState<string | null>(null)
   const [notice, setNotice] = useState('')
+  const [conn, setConn] = useState('')    // '' = connected; else "Connecting…" etc. (updateConnectionState)
   const requested = useRef(new Set<number>())
   seedFiles = (fs) => setFiles((prev) => {
     let next = prev
@@ -122,10 +130,17 @@ export default function App() {
   useEffect(() => {
     let alive = true
     void (async () => {
+      diag(`app: start Aircrew Go ${APP_VERSION}`)
       const c = await TdClient.create(); if (!alive) return
       td.current = c
       c.on('update', (u) => {
         store.handle(u as Any)
+        if (u['@type'] === 'updateConnectionState') {
+          const t = String((u as Any).state?.['@type'] ?? '')
+          diag(`conn: ${t.replace('connectionState', '')}`)
+          setConn(t === 'connectionStateReady' ? '' : t === 'connectionStateWaitingForNetwork' ? 'Waiting for network…'
+            : t === 'connectionStateUpdating' ? 'Updating…' : 'Connecting…')
+        }
         if (u['@type'] === 'updateFile') {
           const st = fileStateOf((u as Any).file)
           if (st) setFiles((prev) => (prev[st.id] || requested.current.has(st.id) ? { ...prev, [st.id]: { ...st, busy: !st.done } } : prev))
@@ -152,25 +167,46 @@ export default function App() {
           setMsgs((prev) => prev.map((m) => (m.id === x.message_id ? { ...m, buttons: buttonsOf(x.reply_markup) } : m)))
         if (here && x['@type'] === 'updateDeleteMessages' && x.is_permanent)
           setMsgs((prev) => prev.filter((m) => !(x.message_ids as number[]).includes(m.id)))
+        if (x['@type'] === 'updateMessageSendSucceeded') diag(`send: delivered chat=${x.message?.chat_id} id=${x.message?.id}`)
         if (x['@type'] === 'updateMessageSendSucceeded' && openRef.current && x.message?.chat_id === openRef.current.id)
         {
           const nm = msgOf(x.message, openRef.current ?? undefined)
           setMsgs((prev) => prev.map((m) => (m.id === x.old_message_id ? nm : m)))
         }
+        // 0.5.2 ignored this: a message Telegram refused still LOOKED sent.
+        if (x['@type'] === 'updateMessageSendFailed') {
+          const e = sendErrOf(x.error ?? x)
+          diag(`send: FAILED chat=${x.message?.chat_id} code=${x.error?.code ?? x.error_code ?? '?'} ${e}`)
+          if (openRef.current && x.message?.chat_id === openRef.current.id) {
+            const nm = { ...msgOf(x.message, openRef.current ?? undefined), state: 'failed' as const, err: e }
+            setMsgs((prev) => prev.map((m) => (m.id === x.old_message_id ? nm : m)))
+          }
+        }
       })
+      // A reused TDLib client (JS restarted, process kept) won't repeat its auth update — ask for the state.
+      if (c.reused) void c.invoke<Any>({ '@type': 'getAuthorizationState' }, 10000).then((st) => onAuth(c, st))
+        .catch((e) => diag(`auth: getAuthorizationState failed: ${(e as Any)?.message ?? e}`))
     })().catch((e) => setErr(String(e?.message ?? JSON.stringify(e))))
     return () => { alive = false }
   }, [])
   const openRef = useRef<Chat | null>(null)
   useEffect(() => {
-    const onVis = () => { if (document.visibilityState === 'visible' && openRef.current) void reloadHistory(openRef.current) }
+    const onVis = () => {
+      diag(`app: ${document.visibilityState}`)
+      if (document.visibilityState !== 'visible') return
+      void healthCheck()
+      if (openRef.current) void reloadHistory(openRef.current, true)
+    }
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
   useEffect(() => { openRef.current = open }, [open])
 
   async function onAuth(c: TdClient, s: Any) {
+    diag(`auth: ${String(s['@type']).replace('authorizationState', '')}`)
     switch (s['@type']) {
+      case 'authorizationStateClosed':     // client is gone for good — start a fresh one on the next page load
+        void TdJson.create({ fresh: true }).then(() => location.reload()); break
       case 'authorizationStateWaitTdlibParameters':
         await c.invoke({
           '@type': 'setTdlibParameters', use_test_dc: false,
@@ -203,6 +239,20 @@ export default function App() {
   async function loadChats(c: TdClient) {
     const me = await c.invoke<Any>({ '@type': 'getMe' }).catch(() => null)
     if (me) store.myId = me.id
+    if (c.reused) {
+      // The previous page already loaded the chat list, so TDLib won't stream updateNewChat again: rebuild it.
+      const r = await c.invoke<Any>({ '@type': 'getChats', chat_list: { '@type': 'chatListMain' }, limit: 500 }).catch(() => null)
+      const ids = (r?.chat_ids ?? []) as number[]
+      for (const id of ids) {
+        const chat = await c.invoke<Any>({ '@type': 'getChat', chat_id: id }).catch(() => null); if (!chat) continue
+        if (chat.type?.['@type'] === 'chatTypePrivate') {
+          const u = await c.invoke<Any>({ '@type': 'getUser', user_id: chat.type.user_id }).catch(() => null)
+          if (u) store.handle({ '@type': 'updateUser', user: u })
+        }
+        store.handle({ '@type': 'updateNewChat', chat })
+      }
+      diag(`chats: rebuilt ${ids.length} from the reused client`)
+    }
     // TDLib streams updateNewChat for every chat it loads; loadChats returns 404 once all are in.
     for (let i = 0; i < 6; i++) {
       const ok = await c.invoke({ '@type': 'loadChats', chat_list: { '@type': 'chatListMain' }, limit: 100 }).then(() => true).catch(() => false)
@@ -218,7 +268,7 @@ export default function App() {
     await c.invoke({ '@type': 'openChat', chat_id: ch.id })
     await reloadHistory(ch)
   }
-  async function reloadHistory(ch: Chat) {
+  async function reloadHistory(ch: Chat, merge = false) {
     const c = td.current!
     let all: Any[] = []; let from = 0
     for (let i = 0; i < 3 && all.length < 30; i++) {           // first call often returns 1 msg
@@ -226,13 +276,29 @@ export default function App() {
       const ms = r.messages as Any[]; if (!ms?.length) break
       all = all.concat(ms); from = ms[ms.length - 1].id
     }
-    setMsgs(all.reverse().map((m) => msgOf(m, ch)))
+    if (openRef.current?.id !== ch.id) return          // user switched chats meanwhile
+    const fetched = all.reverse().map((m) => msgOf(m, ch))
+    // On resume, MERGE: a message sent while this reload was in flight must not vanish from view (0.5.2 overwrote).
+    setMsgs((prev) => {
+      if (!merge || !prev.length) return fetched
+      const ids = new Set(fetched.map((m) => m.id)); const newest = fetched.length ? fetched[fetched.length - 1].date : 0
+      const extra = prev.filter((m) => !ids.has(m.id) && m.date >= newest)
+      return [...fetched, ...extra].sort((a, b) => a.date - b.date || a.id - b.id)
+    })
     if (all.length) void c.invoke({ '@type': 'viewMessages', chat_id: ch.id, message_ids: all.map((m) => m.id), force_read: true }).catch(() => undefined)
   }
   function closeOpen() {
     const c = td.current
     if (c && openRef.current) void c.invoke({ '@type': 'closeChat', chat_id: openRef.current.id }).catch(() => undefined)
     setOpen(null)
+  }
+
+  // Resume self-heal: if TDLib doesn't answer a trivial request, the page lost its bridge — reload re-attaches
+  // to the SAME TDLib client (native keeps it) instead of leaving a deaf UI.
+  async function healthCheck() {
+    const c = td.current; if (!c) return
+    try { await c.invoke({ '@type': 'getOption', name: 'version' }, 6000) }
+    catch { diag('health: TDLib not answering on resume -> reloading the page'); location.reload() }
   }
 
   async function send() {
@@ -249,11 +315,51 @@ export default function App() {
       content = { '@type': 'inputMessageText', text: caption }
     }
     setSending(true)
+    diag(`send: chat=${open.id} ${content['@type']} chars=${text.length}${attach ? ` file=${attach.size}B` : ''}`)
     try {
-      await td.current!.invoke({ '@type': 'sendMessage', chat_id: open.id, input_message_content: content })
+      // sendMessage answers at once with the queued message (Telegram delivery is async) — 15 s means the app is stuck.
+      const r = await td.current!.invoke<Any>({ '@type': 'sendMessage', chat_id: open.id, input_message_content: content }, 15000)
+      diag(`send: queued id=${r?.id} ${String(r?.sending_state?.['@type'] ?? '').replace('messageSendingState', '')}`)
       setDraft(''); setAttach(null)
-    } catch (e) { setNotice(`Not sent: ${(e as Any)?.message ?? 'error'}`) }
+    } catch (e) {
+      const m = (e as Any)?.message ?? 'error'
+      diag(`send: ERROR ${m}`)
+      setNotice(`Not sent: ${m}. Your text is still in the box — tap Send to try again.`)
+    }
     finally { setSending(false) }
+  }
+
+  async function resend(m: Msg) {
+    if (!open) return
+    diag(`send: retry id=${m.id}`)
+    try {
+      const r = await td.current!.invoke<Any>({ '@type': 'resendMessages', chat_id: open.id, message_ids: [m.id] }, 15000)
+      const nm = (r?.messages as Any[] | undefined)?.find(Boolean)
+      if (nm) setMsgs((prev) => prev.map((x) => (x.id === m.id ? msgOf(nm, open) : x)))
+    } catch (e) {
+      const em = (e as Any)?.message ?? 'error'
+      diag(`send: retry ERROR ${em}`)
+      setNotice(`Couldn't resend: ${em}`)
+    }
+  }
+
+  // "Send log to Ada": the diagnostics ring (events only, no message text) as a .txt into Ada's chat.
+  async function sendDiag() {
+    const c = td.current; if (!c) return
+    const ada = [...store.rows.values()].find((r) => r.kind === 'bot' && /^ada\b/i.test(r.title))
+    if (!ada) { setNotice("Couldn't find Ada's chat."); return }
+    try {
+      const head = [`Aircrew Go ${APP_VERSION} diagnostics`, `client ${c.id}${c.reused ? ' (reused)' : ''} · connection: ${conn || 'ready'}`,
+        `UA: ${navigator.userAgent}`, `sent: ${new Date().toISOString()}`, '---'].join('\n')
+      const w = await Filesystem.writeFile({ path: `diag/aircrew-go-diag-${Date.now()}.txt`, data: `${head}\n${diagText()}\n`,
+        directory: Directory.Cache, recursive: true, encoding: Encoding.UTF8 })
+      const path = decodeURIComponent(w.uri.replace(/^file:\/\//, ''))
+      await c.invoke({ '@type': 'sendMessage', chat_id: ada.id, input_message_content: { '@type': 'inputMessageDocument',
+        document: { '@type': 'inputFileLocal', path }, disable_content_type_detection: true,
+        caption: { '@type': 'formattedText', text: `Aircrew Go ${APP_VERSION} diagnostics` } } }, 15000)
+      diag('diag: sent to Ada')
+      setNotice('Diagnostics sent to Ada.')
+    } catch (e) { setNotice(`Couldn't send diagnostics: ${(e as Any)?.message ?? e}`) }
   }
 
   async function press(m: Msg, data?: string) {
@@ -292,7 +398,8 @@ export default function App() {
       {err && <p className="go-err">{err}</p>}
     </div>)
 
-  const list = <ChatList rows={chats} selected={open?.id} onOpen={(r) => void openChat(r)} />
+  const connBar = conn ? <div className="go-conn">{conn}</div> : null
+  const list = <ChatList rows={chats} selected={open?.id} onOpen={(r) => void openChat(r)} onDiag={() => void sendDiag()} banner={connBar} />
   const conv = open ? (
     <div className="conversation go-conv">
       <div className="conv-head">
@@ -306,14 +413,18 @@ export default function App() {
         <Avatar row={open} size={28} />
         <span className="conv-title">{open.title}</span>
       </div>
+      {connBar}
       <div className="conv-scroll" ref={msgsRef}>
         {msgs.map((m) => (
           <div key={m.id} className={`msg ${m.out ? 'out' : 'in'}`}>
             <div className="bubble">
-              <div className="msg-head"><span className="author">{m.author}</span><span className="time">{fmtTime(m.date)}</span></div>
+              <div className="msg-head"><span className="author">{m.author}</span><span className="time">{fmtTime(m.date)}</span>
+                {m.out && <span className={`go-st${m.state ? ` ${m.state}` : ''}`} title={m.state ?? 'sent'}>{m.state === 'pending' ? '🕓' : m.state === 'failed' ? '⚠️' : '✓'}</span>}</div>
               {m.media && <MediaView media={m.media} f={files[m.media.fileId]} onDownload={() => download(m.media!.fileId)}
                 onOpen={(p, mime, apk) => void openFile(p, mime, apk)} onZoom={setZoom} />}
               {m.md && <MessageMarkdown text={m.md} />}
+              {m.state === 'failed' && <div className="go-failed">Not sent{m.err ? ` — ${m.err}` : ''}
+                <button className="go-retry" onClick={() => void resend(m)}>Retry</button></div>}
               {m.buttons && <div className="msg-buttons">{m.buttons.map((row, i) => (
                 <div key={i} className="msg-btn-row">{row.map((b, j) => (
                   <button key={j} className="msg-btn" onClick={() => void press(m, b.data)}>{b.text}</button>))}</div>))}</div>}

@@ -75,3 +75,11 @@ button { font: inherit; }
 }
 .go-conv .composer-attach { border-radius: 12px; }
 .go-conv .attach-tray { padding: 8px 10px 0; background: var(--bg-elev); border-top: 0.5px solid var(--line); }
+
+/* 0.5.3 — connection bar, delivery state, failed/retry, diagnostics button */
+.go-conn { flex: 0 0 auto; padding: 5px 12px; font-size: 12px; text-align: center; color: var(--text); background: color-mix(in srgb, var(--accent) 18%, var(--bg-elev)); border-bottom: 0.5px solid var(--accent); }
+.go-st { margin-left: 6px; font-size: 11px; opacity: .75; }
+.go-st.failed { opacity: 1; }
+.go-failed { margin-top: 6px; font-size: 12px; color: var(--danger); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.go-retry { padding: 3px 10px; border-radius: 8px; border: 0.5px solid var(--danger); background: transparent; color: var(--danger); font-size: 12px; }
+.go-top .go-diag { margin-left: auto; opacity: .7; }
