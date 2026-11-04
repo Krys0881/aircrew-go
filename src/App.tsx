@@ -7,7 +7,7 @@ import { ChatList, Avatar } from './ChatList'
 import { mediaOf, fileStateOf, autoDownload, MediaView, type Media, type FileState } from './media'
 import { TdJson } from './td'
 import { diag, diagText } from './diag'
-import { isHardwareEnterSend } from './keys'
+import { isHardwareEnterSend, isPhysicalTypingKey } from './keys'
 import { App as CapApp } from '@capacitor/app'
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem'
 import { PaperclipIcon, XIcon } from '@aircrew/components/icons'
@@ -17,7 +17,7 @@ import '@aircrew/styles.css'   // the Mac app's own stylesheet — one design fo
 import './app.css'
 
 type Any = Record<string, any>
-const APP_VERSION = '0.5.6'
+const APP_VERSION = '0.5.7'
 type Auth = 'loading' | 'phone' | 'code' | 'password' | 'ready' | 'other'
 type Chat = ChatRow
 const store = new ChatStore()
@@ -108,6 +108,18 @@ export default function App() {
   const [attach, setAttach] = useState<Outgoing | null>(null)
   const [sending, setSending] = useState(false)
   const fileInput = useRef<HTMLInputElement | null>(null)
+  // 0.5.7 (Chris, Bluetooth keyboard: "focus on the chat"): with a hardware keyboard connected, keep the message box
+  // focused — opening a chat, after sending/attaching, back in the app — so he can just type. Without one, nothing
+  // changes (auto-focus would pop up the on-screen keyboard). Connection state comes from Android (TdJson.keyboard).
+  const composer = useRef<HTMLTextAreaElement | null>(null)
+  const [hwKbd, setHwKbd] = useState(false)
+  const hwKbdRef = useRef(false)
+  function focusComposer(why: string) {
+    const el = composer.current
+    if (!hwKbdRef.current || !el || document.activeElement === el) return
+    el.focus({ preventScroll: true })
+    diag(`focus: message box (${why})`)
+  }
   async function pickFile(file: File | undefined) {
     if (!file) return
     try {
@@ -119,6 +131,7 @@ export default function App() {
       const w = await Filesystem.writeFile({ path: `outgoing/${Date.now()}_${safe}`, data: b64, directory: Directory.Cache, recursive: true })
       const thumb = file.type.startsWith('image/') ? URL.createObjectURL(file) : undefined
       setAttach({ path: decodeURIComponent(w.uri.replace(/^file:\/\//, '')), name: file.name, mime: file.type || 'application/octet-stream', size: file.size, thumb })
+      focusComposer('attached')
     } catch (e) { setNotice(`Couldn't attach this file: ${(e as Any)?.message ?? e}`) }
   }
   const msgsRef = useRef<HTMLDivElement | null>(null)
@@ -216,11 +229,32 @@ export default function App() {
       window.setTimeout(rescue, 3000)
       void healthCheck()
       if (openRef.current) void reloadHistory(openRef.current, true)
+      window.setTimeout(() => focusComposer('back in app'), 300)
     }
     document.addEventListener('visibilitychange', onVis)
     return () => document.removeEventListener('visibilitychange', onVis)
   }, [])
   useEffect(() => { openRef.current = open }, [open])
+  useEffect(() => {
+    const set = (on: boolean, why: string) => {
+      if (on !== hwKbdRef.current) diag(`kbd: hardware keyboard ${on ? 'connected' : 'disconnected'} (${why})`)
+      hwKbdRef.current = on; setHwKbd(on)
+    }
+    TdJson.keyboard().then((r) => set(!!r.hardware, 'start')).catch(() => undefined)
+    const h = TdJson.addListener('keyboard', (e) => set(!!e.hardware, 'Android'))
+    // Typing that starts outside the message box (after tapping a message, a button…) goes into it. A physical key
+    // also proves a keyboard is there, in case Android didn't report it.
+    const onKey = (e: KeyboardEvent) => {
+      if (!isPhysicalTypingKey(e)) return
+      if (!hwKbdRef.current) set(true, 'key pressed')
+      const t = e.target as HTMLElement | null
+      if (!openRef.current || (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable))) return
+      focusComposer('typing')                         // no preventDefault: the key itself lands in the box
+    }
+    document.addEventListener('keydown', onKey, true)
+    return () => { void h.then((x) => x.remove()); document.removeEventListener('keydown', onKey, true) }
+  }, [])
+  useEffect(() => { if (open) focusComposer('chat opened') }, [open?.id, hwKbd])
 
   async function onAuth(c: TdClient, s: Any) {
     diag(`auth: ${String(s['@type']).replace('authorizationState', '')}`)
@@ -357,6 +391,7 @@ export default function App() {
       const r = await td.current!.invoke<Any>({ '@type': 'sendMessage', chat_id: open.id, input_message_content: content }, 15000)
       diag(`send: queued id=${r?.id} ${String(r?.sending_state?.['@type'] ?? '').replace('messageSendingState', '')}`)
       setDraft(''); setAttach(null)
+      focusComposer('sent')
     } catch (e) {
       const m = (e as Any)?.message ?? 'error'
       diag(`send: ERROR ${m}`)
@@ -475,7 +510,7 @@ export default function App() {
       <div className="composer">
         <button className="composer-attach" onClick={() => fileInput.current?.click()} aria-label="Attach"><PaperclipIcon size={18} /></button>
         <input ref={fileInput} type="file" hidden onChange={(e) => { void pickFile(e.target.files?.[0]); e.target.value = '' }} />
-        <textarea className="composer-input" rows={1} value={draft} placeholder={attach ? "Add a caption…" : "Message…"}
+        <textarea ref={composer} className="composer-input" rows={1} value={draft} placeholder={attach ? "Add a caption…" : "Message…"}
           onChange={(e) => { setDraft(e.target.value); e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px` }}
           onKeyDown={(e) => {
             // 0.5.5: hardware (Bluetooth) keyboard Enter = send, Shift+Enter = new line; on-screen Enter stays a new line

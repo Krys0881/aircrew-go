@@ -3,6 +3,7 @@ package chat.aircrew.go;
 import android.content.ActivityNotFoundException;
 import android.content.Context;
 import android.content.Intent;
+import android.content.res.Configuration;
 import android.net.ConnectivityManager;
 import android.net.Network;
 import android.net.NetworkCapabilities;
@@ -145,6 +146,29 @@ public class TdJsonPlugin extends Plugin {
         if (id == null || json == null) { call.reject("clientId and json are required"); return; }
         JsonClient.send(id, json);
         call.resolve();
+    }
+
+    // ---- 0.5.7: is a hardware (e.g. Bluetooth) keyboard connected? JS then keeps the message box focused --------
+    // Chris: with his BT keyboard he wants to just type, without tapping the message box. Without a keyboard nothing
+    // changes (auto-focus would pop up the on-screen keyboard). The manifest's configChanges include keyboard|
+    // keyboardHidden, so (dis)connecting a keyboard arrives here instead of recreating the activity.
+    private static boolean hardwareKeyboard(Configuration c) {
+        return c.keyboard == Configuration.KEYBOARD_QWERTY && c.hardKeyboardHidden == Configuration.HARDKEYBOARDHIDDEN_NO;
+    }
+
+    @PluginMethod
+    public void keyboard(PluginCall call) {
+        JSObject r = new JSObject();
+        r.put("hardware", hardwareKeyboard(getContext().getResources().getConfiguration()));
+        call.resolve(r);
+    }
+
+    @Override
+    protected void handleOnConfigurationChanged(Configuration c) {
+        super.handleOnConfigurationChanged(c);
+        JSObject ev = new JSObject();
+        ev.put("hardware", hardwareKeyboard(c));
+        notifyListeners("keyboard", ev, true);
     }
 
     @PluginMethod

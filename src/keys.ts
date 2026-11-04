@@ -16,3 +16,10 @@ export function isHardwareEnterSend(e: EnterKey): boolean {
   if (e.shiftKey || e.altKey || e.ctrlKey || e.metaKey) return false // Shift+Enter (and any modifier) = default: new line
   return e.code === 'Enter' || e.code === 'NumpadEnter' // physical Enter keys only
 }
+
+// 0.5.7: a printable key from a PHYSICAL keyboard (letters, digits, punctuation, space) with no Ctrl/Alt/Meta —
+// used to send typing that starts outside the message box into it. On-screen keyboards type via the IME
+// (key 'Unidentified' / code ''), so they never match.
+export function isPhysicalTypingKey(e: Omit<EnterKey, 'shiftKey'>): boolean {
+  return e.key.length === 1 && e.code !== '' && !e.altKey && !e.ctrlKey && !e.metaKey && !e.isComposing
+}

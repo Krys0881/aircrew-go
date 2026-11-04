@@ -11,6 +11,8 @@ interface TdJsonPlugin {
   openFile(o: { path: string; mime?: string }): Promise<{ needsPermission?: boolean }>
   addListener(ev: 'td', cb: (e: { json: string }) => void): Promise<{ remove: () => void }>
   addListener(ev: 'net', cb: (e: { line: string }) => void): Promise<{ remove: () => void }>
+  keyboard(): Promise<{ hardware: boolean }>
+  addListener(ev: 'keyboard', cb: (e: { hardware: boolean }) => void): Promise<{ remove: () => void }>
 }
 export const TdJson = registerPlugin<TdJsonPlugin>('TdJson')
 
