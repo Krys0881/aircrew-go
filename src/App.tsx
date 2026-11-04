@@ -7,6 +7,7 @@ import { ChatList, Avatar } from './ChatList'
 import { mediaOf, fileStateOf, autoDownload, MediaView, type Media, type FileState } from './media'
 import { TdJson } from './td'
 import { diag, diagText } from './diag'
+import { isHardwareEnterSend } from './keys'
 import { App as CapApp } from '@capacitor/app'
 import { Filesystem, Directory, Encoding } from '@capacitor/filesystem'
 import { PaperclipIcon, XIcon } from '@aircrew/components/icons'
@@ -16,7 +17,7 @@ import '@aircrew/styles.css'   // the Mac app's own stylesheet — one design fo
 import './app.css'
 
 type Any = Record<string, any>
-const APP_VERSION = '0.5.4'
+const APP_VERSION = '0.5.5'
 type Auth = 'loading' | 'phone' | 'code' | 'password' | 'ready' | 'other'
 type Chat = ChatRow
 const store = new ChatStore()
@@ -471,7 +472,13 @@ export default function App() {
         <button className="composer-attach" onClick={() => fileInput.current?.click()} aria-label="Attach"><PaperclipIcon size={18} /></button>
         <input ref={fileInput} type="file" hidden onChange={(e) => { void pickFile(e.target.files?.[0]); e.target.value = '' }} />
         <textarea className="composer-input" rows={1} value={draft} placeholder={attach ? "Add a caption…" : "Message…"}
-          onChange={(e) => { setDraft(e.target.value); e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px` }} />
+          onChange={(e) => { setDraft(e.target.value); e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px` }}
+          onKeyDown={(e) => {
+            // 0.5.5: hardware (Bluetooth) keyboard Enter = send, Shift+Enter = new line; on-screen Enter stays a new line
+            if (e.key === 'Enter') diag(`key: Enter code=${e.code || '-'} shift=${e.shiftKey ? 1 : 0}`)
+            if (isHardwareEnterSend({ key: e.key, code: e.code, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey,
+              metaKey: e.metaKey, isComposing: e.nativeEvent.isComposing })) { e.preventDefault(); if (!sending) void send() }
+          }} />
         <button className="composer-send" disabled={sending || (!draft.trim() && !attach)} onClick={() => void send()} aria-label="Send">
           <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" /></svg>
         </button>
