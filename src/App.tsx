@@ -17,7 +17,7 @@ import '@aircrew/styles.css'   // the Mac app's own stylesheet — one design fo
 import './app.css'
 
 type Any = Record<string, any>
-const APP_VERSION = '0.5.5'
+const APP_VERSION = '0.5.6'
 type Auth = 'loading' | 'phone' | 'code' | 'password' | 'ready' | 'other'
 type Chat = ChatRow
 const store = new ChatStore()
@@ -339,10 +339,14 @@ export default function App() {
     const caption = { '@type': 'formattedText', text }
     let content: Any
     if (attach) {
+      // TDLib (built 2026-10) wraps the file: inputMessagePhoto.photo = inputPhoto, inputMessageDocument.document = inputDocument.
+      // Passing the bare inputFileLocal there leaves the file null -> "InputFile is not specified" (0.5.6 fix).
       const local = { '@type': 'inputFileLocal', path: attach.path }
       content = /^image\/(jpeg|png|webp)$/.test(attach.mime)
-        ? { '@type': 'inputMessagePhoto', photo: local, added_sticker_file_ids: [], width: 0, height: 0, caption, has_spoiler: false }
-        : { '@type': 'inputMessageDocument', document: local, disable_content_type_detection: false, caption }
+        ? { '@type': 'inputMessagePhoto', caption, show_caption_above_media: false, has_spoiler: false,
+            photo: { '@type': 'inputPhoto', photo: local, added_sticker_file_ids: [], width: 0, height: 0 } }
+        : { '@type': 'inputMessageDocument', caption,
+            document: { '@type': 'inputDocument', document: local, disable_content_type_detection: false } }
     } else {
       content = { '@type': 'inputMessageText', text: caption }
     }
@@ -387,7 +391,7 @@ export default function App() {
         directory: Directory.Cache, recursive: true, encoding: Encoding.UTF8 })
       const path = decodeURIComponent(w.uri.replace(/^file:\/\//, ''))
       await c.invoke({ '@type': 'sendMessage', chat_id: ada.id, input_message_content: { '@type': 'inputMessageDocument',
-        document: { '@type': 'inputFileLocal', path }, disable_content_type_detection: true,
+        document: { '@type': 'inputDocument', document: { '@type': 'inputFileLocal', path }, disable_content_type_detection: true },
         caption: { '@type': 'formattedText', text: `Aircrew Go ${APP_VERSION} diagnostics` } } }, 15000)
       diag('diag: sent to Ada')
       setNotice('Diagnostics sent to Ada.')
