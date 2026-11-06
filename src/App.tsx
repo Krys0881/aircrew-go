@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type PointerEvent as RPointerEvent } from 'react'
 import { TdClient } from './td'
 import { CREDS } from './creds'
 import { ftToMarkdown, type FT } from './tdmd'
@@ -17,7 +17,7 @@ import '@aircrew/styles.css'   // the Mac app's own stylesheet — one design fo
 import './app.css'
 
 type Any = Record<string, any>
-const APP_VERSION = '0.5.7'
+const APP_VERSION = '0.5.8'
 type Auth = 'loading' | 'phone' | 'code' | 'password' | 'ready' | 'other'
 type Chat = ChatRow
 const store = new ChatStore()
@@ -28,8 +28,10 @@ function useWide(): boolean {
   useEffect(() => { const m = window.matchMedia(mq); const f = () => setW(m.matches); m.addEventListener('change', f); return () => m.removeEventListener('change', f) }, [])
   return w
 }
-type Msg = { id: number; out: boolean; md: string; author: string; date: number; media?: Media; buttons?: { text: string; data?: string }[][]
-  state?: 'pending' | 'failed'; err?: string }   // outgoing delivery state (0.5.3): pending 🕓 · failed ⚠️ + Retry
+type Btn = { text: string; data?: string; insert?: string }   // data = callback · insert = "✏️ Edit" text (0.5.8)
+type Msg = { id: number; out: boolean; md: string; plain: string; author: string; date: number; media?: Media; buttons?: Btn[][]
+  state?: 'pending' | 'failed'; err?: string     // outgoing delivery state (0.5.3): pending 🕓 · failed ⚠️ + Retry
+  replyTo?: number; quote?: string }              // 0.5.8: this message replies to message `replyTo` (same chat)
 const sendErrOf = (x: Any | undefined): string => x?.message ?? x?.error_message ?? ''
 const fmtTime = (unix: number) => new Date(unix * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
 
@@ -43,15 +45,32 @@ function mdOf(c: Any = {}): string {
 let seedFiles: (files: Any[]) => void = () => {}
 function buttonsOf(rm: Any | undefined): Msg['buttons'] {
   return rm?.['@type'] === 'replyMarkupInlineKeyboard'
-    ? (rm.rows as Any[][]).map((row) => row.map((b) => ({ text: b.text, data: b.type?.data }))) : undefined
+    ? (rm.rows as Any[][]).map((row) => row.map((b): Btn => {
+        const t = b.type ?? {}
+        // 0.5.8: "✏️ Edit" is a switch_inline_query_current_chat button (TDLib inlineKeyboardButtonTypeSwitchInline,
+        // no callback data) — ≤0.5.7 only knew callback buttons, so tapping it did nothing. It now puts the text in the box.
+        if (t['@type'] === 'inlineKeyboardButtonTypeSwitchInline') return { text: b.text, insert: String(t.query ?? '') }
+        return { text: b.text, data: t.data }
+      })) : undefined
+}
+const MEDIA_LABEL: Record<string, string> = { photo: '📷 Photo', sticker: 'Sticker', animation: 'GIF', audio: '🎵 Audio', file: '📎 File' }
+// one-line preview of a message (reply bar, quotes, long-press menu)
+function snippetOf(m: Pick<Msg, 'plain' | 'md' | 'media'>): string {
+  const t = (m.plain || m.md).replace(/\s+/g, ' ').trim()
+  const label = m.media ? (m.media.kind === 'audio' && m.media.voice ? '🎤 Voice message' : MEDIA_LABEL[m.media.kind] ?? '📎 File') : ''
+  const s = t || label || '…'
+  return s.length > 90 ? `${s.slice(0, 89)}…` : s
 }
 function msgOf(m: Any, chat?: ChatRow): Msg {
   const { media, files } = mediaOf(m.content)
   if (files.length) seedFiles(files)
   const ss = m.sending_state
   const st = ss?.['@type'] === 'messageSendingStatePending' ? 'pending' : ss?.['@type'] === 'messageSendingStateFailed' ? 'failed' : undefined
-  return { id: m.id, out: !!m.is_outgoing, md: mdOf(m.content), author: store.authorOf(m, chat), date: m.date ?? 0, media, buttons: buttonsOf(m.reply_markup),
-    state: st, err: st === 'failed' ? sendErrOf(ss.error ?? ss) : undefined }
+  const rt = m.reply_to?.['@type'] === 'messageReplyToMessage' && (!m.reply_to.chat_id || m.reply_to.chat_id === m.chat_id) ? m.reply_to : undefined
+  return { id: m.id, out: !!m.is_outgoing, md: mdOf(m.content), plain: String(m.content?.text?.text ?? m.content?.caption?.text ?? ''),
+    author: store.authorOf(m, chat), date: m.date ?? 0, media, buttons: buttonsOf(m.reply_markup),
+    state: st, err: st === 'failed' ? sendErrOf(ss.error ?? ss) : undefined,
+    replyTo: rt ? Number(rt.message_id) : undefined, quote: rt?.quote?.text?.text || undefined }
 }
 
 export default function App() {
@@ -120,6 +139,49 @@ export default function App() {
     el.focus({ preventScroll: true })
     diag(`focus: message box (${why})`)
   }
+  // 0.5.8: put text in the message box and focus it on purpose (opens the on-screen keyboard: the user wants to type).
+  function fillComposer(text: string | null, why: string) {
+    if (text !== null) setDraft(text)
+    window.setTimeout(() => {                       // after React has rendered the new value
+      const el = composer.current; if (!el) return
+      el.style.height = 'auto'; el.style.height = `${Math.min(el.scrollHeight, 160)}px`
+      el.focus({ preventScroll: true }); const n = el.value.length; el.setSelectionRange(n, n)
+      diag(`focus: message box (${why})`)
+    }, 0)
+  }
+  // 0.5.8 Reply: long-press (or right-click) a message -> menu (Reply · Copy text) -> reply bar above the box -> the
+  // next message is sent as a reply (sendMessage.reply_to = inputMessageReplyToMessage). Replies show a quote on top.
+  const [replyTo, setReplyTo] = useState<Msg | null>(null)
+  const [menu, setMenu] = useState<Msg | null>(null)
+  const [flash, setFlash] = useState(0)
+  const [replied, setReplied] = useState<Record<number, { author: string; text: string }>>({})   // quoted msgs not in view
+  const repliedAsked = useRef(new Set<number>())
+  const pressT = useRef<number | null>(null)
+  const pressXY = useRef({ x: 0, y: 0 })
+  function openMenu(m: Msg) { endPress(); window.getSelection()?.removeAllRanges(); setMenu(m); diag(`menu: message ${m.id}`) }
+  function startPress(e: RPointerEvent, m: Msg) {
+    if (e.pointerType === 'mouse') return            // mouse: right-click (contextmenu) opens the menu
+    endPress(); pressXY.current = { x: e.clientX, y: e.clientY }
+    pressT.current = window.setTimeout(() => { pressT.current = null; openMenu(m) }, 450)
+  }
+  function movePress(e: RPointerEvent) {
+    if (pressT.current && (Math.abs(e.clientX - pressXY.current.x) > 10 || Math.abs(e.clientY - pressXY.current.y) > 10)) endPress()
+  }
+  function endPress() { if (pressT.current) { window.clearTimeout(pressT.current); pressT.current = null } }
+  function startReply(m: Msg) { setMenu(null); setReplyTo(m); diag(`reply: to message ${m.id}`); fillComposer(null, 'reply') }
+  async function copyText(m: Msg) {
+    const t = m.plain || m.md
+    setMenu(null)
+    try { await navigator.clipboard.writeText(t) } catch {
+      const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select()
+      document.execCommand('copy'); ta.remove()
+    }
+    setNotice('Copied.'); window.setTimeout(() => setNotice((n) => (n === 'Copied.' ? '' : n)), 1500)
+  }
+  function jumpTo(id: number) {
+    const el = document.getElementById(`msg-${id}`); if (!el) return
+    el.scrollIntoView({ block: 'center', behavior: 'smooth' }); setFlash(id); window.setTimeout(() => setFlash((f) => (f === id ? 0 : f)), 1300)
+  }
   async function pickFile(file: File | undefined) {
     if (!file) return
     try {
@@ -143,6 +205,19 @@ export default function App() {
   }, [msgs, files])
   // newest message at the bottom, like Telegram: stick to the end when messages change
   useEffect(() => { const el = msgsRef.current; if (el) el.scrollTop = el.scrollHeight }, [msgs])
+  // quotes: a reply to a message that isn't loaded (older history) -> ask TDLib for it once
+  useEffect(() => {
+    const c = td.current; const ch = open; if (!c || !ch) return
+    const have = new Set(msgs.map((x) => x.id))
+    for (const m of msgs) {
+      const target = m.replyTo
+      if (target === undefined || have.has(target) || repliedAsked.current.has(target)) continue
+      repliedAsked.current.add(target)
+      void c.invoke<Any>({ '@type': 'getRepliedMessage', chat_id: ch.id, message_id: m.id }).then((r) => {
+        const x = msgOf(r, ch); setReplied((p) => ({ ...p, [target]: { author: x.author, text: snippetOf(x) } }))
+      }).catch(() => undefined)
+    }
+  }, [msgs, open?.id])
 
   useEffect(() => {
     let alive = true
@@ -177,8 +252,9 @@ export default function App() {
         const here = openRef.current && x.chat_id === openRef.current.id
         if (here && x['@type'] === 'updateMessageContent') {
           const md = mdOf(x.new_content); const r = mediaOf(x.new_content)
+          const plain = String(x.new_content?.text?.text ?? x.new_content?.caption?.text ?? '')
           if (r.files.length) seedFiles(r.files)
-          setMsgs((prev) => prev.map((m) => (m.id === x.message_id ? { ...m, md, media: r.media } : m)))
+          setMsgs((prev) => prev.map((m) => (m.id === x.message_id ? { ...m, md, plain, media: r.media } : m)))
         }
         if (here && x['@type'] === 'updateMessageEdited')
           setMsgs((prev) => prev.map((m) => (m.id === x.message_id ? { ...m, buttons: buttonsOf(x.reply_markup) } : m)))
@@ -318,6 +394,7 @@ export default function App() {
   async function openChat(ch: Chat) {
     const c = td.current!
     if (openRef.current && openRef.current.id !== ch.id) void c.invoke({ '@type': 'closeChat', chat_id: openRef.current.id }).catch(() => undefined)
+    if (openRef.current?.id !== ch.id) { setReplyTo(null); setMenu(null); setReplied({}); repliedAsked.current.clear() }
     setOpen(ch); setMsgs([])
     await c.invoke({ '@type': 'openChat', chat_id: ch.id })
     await reloadHistory(ch)
@@ -344,7 +421,7 @@ export default function App() {
   function closeOpen() {
     const c = td.current
     if (c && openRef.current) void c.invoke({ '@type': 'closeChat', chat_id: openRef.current.id }).catch(() => undefined)
-    setOpen(null)
+    setOpen(null); setReplyTo(null); setMenu(null)
   }
 
   // Resume self-heal: if TDLib doesn't answer a trivial request, the page lost its bridge — reload re-attaches
@@ -385,12 +462,14 @@ export default function App() {
       content = { '@type': 'inputMessageText', text: caption }
     }
     setSending(true)
-    diag(`send: chat=${open.id} ${content['@type']} chars=${text.length}${attach ? ` file=${attach.size}B` : ''}`)
+    const rt = replyTo && !replyTo.state ? replyTo.id : 0
+    diag(`send: chat=${open.id} ${content['@type']} chars=${text.length}${attach ? ` file=${attach.size}B` : ''}${rt ? ` reply=${rt}` : ''}`)
     try {
       // sendMessage answers at once with the queued message (Telegram delivery is async) — 15 s means the app is stuck.
-      const r = await td.current!.invoke<Any>({ '@type': 'sendMessage', chat_id: open.id, input_message_content: content }, 15000)
+      const r = await td.current!.invoke<Any>({ '@type': 'sendMessage', chat_id: open.id, input_message_content: content,
+        ...(rt ? { reply_to: { '@type': 'inputMessageReplyToMessage', message_id: rt } } : {}) }, 15000)
       diag(`send: queued id=${r?.id} ${String(r?.sending_state?.['@type'] ?? '').replace('messageSendingState', '')}`)
-      setDraft(''); setAttach(null)
+      setDraft(''); setAttach(null); setReplyTo(null)
       focusComposer('sent')
     } catch (e) {
       const m = (e as Any)?.message ?? 'error'
@@ -433,10 +512,15 @@ export default function App() {
     } catch (e) { setNotice(`Couldn't send diagnostics: ${(e as Any)?.message ?? e}`) }
   }
 
-  async function press(m: Msg, data?: string) {
-    if (!open || !data) return
+  async function press(m: Msg, b: Btn) {
+    if (!open) return
+    if (b.insert !== undefined) {                    // "✏️ Edit": the suggestion goes into the box, ready to change and send
+      diag(`button: "${b.text}" -> message box (${b.insert.length} chars)`)
+      fillComposer(b.insert, 'edit suggestion'); return
+    }
+    if (!b.data) return
     await td.current!.invoke({ '@type': 'getCallbackQueryAnswer', chat_id: open.id, message_id: m.id,
-      payload: { '@type': 'callbackQueryPayloadData', data } }).catch(() => undefined)
+      payload: { '@type': 'callbackQueryPayloadData', data: b.data } }).catch(() => undefined)
   }
 
   // Android back = Go's own navigation (Capacitor would otherwise exit the app):
@@ -445,6 +529,8 @@ export default function App() {
   backRef.current = () => {
     if (zoom) return setZoom(null)
     if (notice) return setNotice('')
+    if (menu) return setMenu(null)
+    if (replyTo) return setReplyTo(null)
     if (open) {
       if (wide && listHidden) return toggleList()       // unfolded + list hidden: first bring the list back
       return closeOpen()
@@ -486,11 +572,21 @@ export default function App() {
       </div>
       {connBar}
       <div className="conv-scroll" ref={msgsRef}>
-        {msgs.map((m) => (
-          <div key={m.id} className={`msg ${m.out ? 'out' : 'in'}`}>
+        {msgs.map((m) => {
+          const q = m.replyTo === undefined ? undefined : (() => {
+            const t = msgs.find((x) => x.id === m.replyTo)
+            const r = t ? { author: t.author, text: snippetOf(t) } : replied[m.replyTo]
+            return { author: r?.author ?? 'Reply', text: m.quote || r?.text || '…' }
+          })()
+          return (
+          <div key={m.id} id={`msg-${m.id}`} className={`msg ${m.out ? 'out' : 'in'}${flash === m.id ? ' go-flash' : ''}`}
+            onContextMenu={(e) => { e.preventDefault(); openMenu(m) }}
+            onPointerDown={(e) => startPress(e, m)} onPointerMove={movePress} onPointerUp={endPress} onPointerCancel={endPress}>
             <div className="bubble">
               <div className="msg-head"><span className="author">{m.author}</span><span className="time">{fmtTime(m.date)}</span>
                 {m.out && <span className={`go-st${m.state ? ` ${m.state}` : ''}`} title={m.state ?? 'sent'}>{m.state === 'pending' ? '🕓' : m.state === 'failed' ? '⚠️' : '✓'}</span>}</div>
+              {q && <div className="go-quote" onClick={() => jumpTo(m.replyTo!)}>
+                <span className="go-quote-who">{q.author}</span><span className="go-quote-text">{q.text}</span></div>}
               {m.media && <MediaView media={m.media} f={files[m.media.fileId]} onDownload={() => download(m.media!.fileId)}
                 onOpen={(p, mime, apk) => void openFile(p, mime, apk)} onZoom={setZoom} />}
               {m.md && <MessageMarkdown text={m.md} />}
@@ -498,10 +594,15 @@ export default function App() {
                 <button className="go-retry" onClick={() => void resend(m)}>Retry</button></div>}
               {m.buttons && <div className="msg-buttons">{m.buttons.map((row, i) => (
                 <div key={i} className="msg-btn-row">{row.map((b, j) => (
-                  <button key={j} className="msg-btn" onClick={() => void press(m, b.data)}>{b.text}</button>))}</div>))}</div>}
+                  <button key={j} className="msg-btn" onClick={() => void press(m, b)}>{b.text}</button>))}</div>))}</div>}
             </div>
-          </div>))}
+          </div>)})}
       </div>
+      {replyTo && <div className="go-replybar">
+        <div className="go-replybar-body" onClick={() => jumpTo(replyTo.id)}>
+          <span className="go-quote-who">↩ {replyTo.author}</span><span className="go-quote-text">{snippetOf(replyTo)}</span></div>
+        <button className="attach-chip-x" onClick={() => setReplyTo(null)} aria-label="Cancel reply"><XIcon size={14} /></button>
+      </div>}
       {attach && <div className="attach-tray"><div className="attach-chip">
         {attach.thumb ? <img className="attach-chip-thumb" src={attach.thumb} alt="" /> : <span className="attach-chip-ico">📎</span>}
         <span className="attach-chip-name">{attach.name}</span>
@@ -514,6 +615,7 @@ export default function App() {
           onChange={(e) => { setDraft(e.target.value); e.target.style.height = 'auto'; e.target.style.height = `${Math.min(e.target.scrollHeight, 160)}px` }}
           onKeyDown={(e) => {
             // 0.5.5: hardware (Bluetooth) keyboard Enter = send, Shift+Enter = new line; on-screen Enter stays a new line
+            if (e.key === 'Escape' && replyTo) { e.preventDefault(); setReplyTo(null); return }   // 0.5.8: Esc cancels the reply
             if (e.key === 'Enter') diag(`key: Enter code=${e.code || '-'} shift=${e.shiftKey ? 1 : 0}`)
             if (isHardwareEnterSend({ key: e.key, code: e.code, shiftKey: e.shiftKey, altKey: e.altKey, ctrlKey: e.ctrlKey,
               metaKey: e.metaKey, isComposing: e.nativeEvent.isComposing })) { e.preventDefault(); if (!sending) void send() }
@@ -527,6 +629,13 @@ export default function App() {
   const overlays = <>
     {zoom && <div className="go-zoom" onClick={() => setZoom(null)}><img src={zoom} alt="" /></div>}
     {notice && <div className="go-notice" onClick={() => setNotice('')}>{notice}</div>}
+    {menu && <div className="go-sheet-bg" onClick={() => setMenu(null)}>
+      <div className="go-sheet" onClick={(e) => e.stopPropagation()}>
+        <div className="go-sheet-preview"><span className="go-quote-who">{menu.author}</span><span className="go-quote-text">{snippetOf(menu)}</span></div>
+        {!menu.state && <button className="go-sheet-btn" onClick={() => startReply(menu)}>↩&nbsp; Reply</button>}
+        {(menu.plain || menu.md) && <button className="go-sheet-btn" onClick={() => void copyText(menu)}>⧉&nbsp; Copy text</button>}
+        <button className="go-sheet-btn muted" onClick={() => setMenu(null)}>Cancel</button>
+      </div></div>}
   </>
   if (wide) return <><div className={`split${listHidden && open ? ' hidden' : ''}`}>{!(listHidden && open) && list}{conv}</div>{overlays}</>
   return <>{open ? conv : list}{overlays}</>

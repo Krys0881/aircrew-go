@@ -83,3 +83,18 @@ button { font: inherit; }
 .go-failed { margin-top: 6px; font-size: 12px; color: var(--danger); display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
 .go-retry { padding: 3px 10px; border-radius: 8px; border: 0.5px solid var(--danger); background: transparent; color: var(--danger); font-size: 12px; }
 .go-top .go-diag { margin-left: auto; opacity: .7; }
+/* 0.5.8 — Reply: quote on top of a reply, reply bar above the box, long-press menu (bottom sheet) */
+.go-quote, .go-replybar-body, .go-sheet-preview { display: flex; flex-direction: column; gap: 1px; min-width: 0; padding: 4px 8px; border-left: 3px solid var(--accent); border-radius: 4px; background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.go-quote { margin: 2px 0 6px; cursor: pointer; }
+.go-quote-who { font-size: 12px; font-weight: 600; color: var(--accent); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.go-quote-text { font-size: 13px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.go-conv .go-replybar { display: flex; align-items: center; gap: 8px; padding: 8px 10px 0; background: var(--bg-elev); border-top: 0.5px solid var(--line); }
+.go-replybar-body { flex: 1 1 auto; cursor: pointer; }
+.go-conv .msg.go-flash .bubble { box-shadow: 0 0 0 2px var(--accent); transition: box-shadow .3s; }
+.go-sheet-bg { position: fixed; inset: 0; z-index: 70; display: flex; align-items: flex-end; justify-content: center; background: rgba(0,0,0,.45); }
+.go-sheet { width: 100%; max-width: 520px; padding: 12px 12px calc(12px + env(safe-area-inset-bottom)); border-radius: 16px 16px 0 0; background: var(--bg-elev); border-top: 0.5px solid var(--line); display: flex; flex-direction: column; gap: 6px; }
+.go-sheet-preview { margin-bottom: 6px; }
+.go-sheet-btn { padding: 13px 14px; border-radius: 10px; border: 0; text-align: left; font-size: 15px; color: var(--text); background: var(--bg-row); }
+.go-sheet-btn.muted { color: var(--muted); text-align: center; }
+/* touch: a long-press opens the menu (Copy text is there) instead of the WebView's text selection */
+@media (pointer: coarse) { .go-conv .msg .bubble { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; } }
